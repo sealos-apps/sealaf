@@ -122,6 +122,7 @@ jobs:
           TAG_NAME="${{ needs.meta.outputs.tag_name }}"
           sudo sealos login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" ghcr.io
           sed -i -E "s#(ghcr.io/labring/sealos-cloud-[^:]+:)latest#\\1${TAG_NAME}#g" Kubefile
+          sudo sealos registry save --registry-dir=registry --arch ${{ matrix.arch }} .
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
