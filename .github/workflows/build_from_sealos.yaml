@@ -7,6 +7,7 @@ on:
         description: 'Build version, supports sha-xxx or v5.xxx.'
         required: true
         type: string
+        default: sha-kb-0.8
 
 env:
   GHCR_REPO: ghcr.io/${{ github.repository }}
