@@ -51,8 +51,10 @@ export class CloudBinBucketService {
 
     const res = await this.clusterService
       .deleteStorageBucket(user, bucketName)
-      // eslint-disable-next-line @typescript-eslint/no-empty-function
-      .catch(() => {})
+      .catch((error) => {
+        if (error?.response?.body?.reason === 'NotFound') return null
+        throw error
+      })
     this.logger.warn(`delete cloud-bin bucket ${bucketName} for app ${appid}`)
     return res
   }

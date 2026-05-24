@@ -8,6 +8,11 @@ import {
   TriggerPhase,
   TriggerState,
 } from './entities/cron-trigger'
+import {
+  Application,
+  ApplicationPhase,
+  ApplicationState,
+} from 'src/application/entities/application'
 
 @Injectable()
 export class TriggerTaskService {
@@ -59,6 +64,7 @@ export class TriggerTaskService {
       .collection<CronTrigger>('CronTrigger')
       .findOneAndUpdate(
         {
+          state: TriggerState.Active,
           phase: TriggerPhase.Creating,
           lockedAt: { $lt: new Date(Date.now() - 1000 * this.lockTimeout) },
         },
@@ -69,16 +75,35 @@ export class TriggerTaskService {
 
     const doc = res.value
 
+    if (await this.isApplicationDeleting(doc.appid)) {
+      await this.markDeleting(doc)
+      return
+    }
+
     // create cron job if not exists
     const job = await this.cronService.findOne(doc)
     if (!job) {
+      if (await this.isApplicationDeleting(doc.appid)) {
+        await this.markDeleting(doc)
+        return
+      }
+
       await this.cronService.create(doc)
       this.logger.log('cron job created: ' + doc._id)
+
+      if (await this.isApplicationDeleting(doc.appid)) {
+        await this.markDeleting(doc)
+        return
+      }
     }
 
     // update phase to `Created`
     await db.collection<CronTrigger>('CronTrigger').updateOne(
-      { _id: doc._id, phase: TriggerPhase.Creating },
+      {
+        _id: doc._id,
+        state: TriggerState.Active,
+        phase: TriggerPhase.Creating,
+      },
       {
         $set: { phase: TriggerPhase.Created, lockedAt: TASK_LOCK_INIT_TIME },
       },
@@ -169,7 +194,10 @@ export class TriggerTaskService {
     const db = SystemDatabase.db
 
     await db.collection<CronTrigger>('CronTrigger').updateMany(
-      { state: TriggerState.Deleted, phase: TriggerPhase.Created },
+      {
+        state: TriggerState.Deleted,
+        phase: { $in: [TriggerPhase.Creating, TriggerPhase.Created] },
+      },
       {
         $set: { phase: TriggerPhase.Deleting, lockedAt: TASK_LOCK_INIT_TIME },
       },
@@ -178,5 +206,32 @@ export class TriggerTaskService {
     await db
       .collection<CronTrigger>('CronTrigger')
       .deleteMany({ state: TriggerState.Deleted, phase: TriggerPhase.Deleted })
+  }
+
+  private async markDeleting(doc: CronTrigger) {
+    const db = SystemDatabase.db
+    await db.collection<CronTrigger>('CronTrigger').updateOne(
+      { _id: doc._id, phase: TriggerPhase.Creating },
+      {
+        $set: {
+          state: TriggerState.Deleted,
+          phase: TriggerPhase.Deleting,
+          lockedAt: TASK_LOCK_INIT_TIME,
+        },
+      },
+    )
+  }
+
+  private async isApplicationDeleting(appid: string) {
+    const app = await SystemDatabase.db
+      .collection<Application>('Application')
+      .findOne({ appid }, { projection: { state: 1, phase: 1 } })
+
+    return (
+      !app ||
+      app.state === ApplicationState.Deleted ||
+      app.phase === ApplicationPhase.Deleting ||
+      app.phase === ApplicationPhase.Deleted
+    )
   }
 }

@@ -10,6 +10,11 @@ import {
   DomainState,
   RuntimeDomain,
 } from './entities/runtime-domain'
+import {
+  Application,
+  ApplicationPhase,
+  ApplicationState,
+} from 'src/application/entities/application'
 import { CertificateService } from './certificate.service'
 import { isConditionTrue } from 'src/utils/getter'
 import { RuntimeGatewayService } from './ingress/runtime-ingress.service'
@@ -75,6 +80,7 @@ export class RuntimeDomainTaskService {
       .collection<RuntimeDomain>('RuntimeDomain')
       .findOneAndUpdate(
         {
+          state: DomainState.Active,
           phase: DomainPhase.Creating,
           lockedAt: { $lt: new Date(Date.now() - 1000 * this.lockTimeout) },
         },
@@ -88,6 +94,11 @@ export class RuntimeDomainTaskService {
     const doc = res.value
     this.logger.log('handleCreatingPhase matched function domain ' + doc.appid)
 
+    if (await this.isApplicationDeleting(doc.appid)) {
+      await this.markDeleting(doc)
+      return
+    }
+
     const region = await this.regionService.findByAppId(doc.appid)
     assert(region, 'region not found')
 
@@ -96,14 +107,30 @@ export class RuntimeDomainTaskService {
     // issue ssl certificate
     // Warning: create certificate before ingress, otherwise apisix ingress will not work
     if (doc.customDomain && region.gatewayConf.tls) {
+      if (await this.isApplicationDeleting(doc.appid)) {
+        await this.markDeleting(doc)
+        return
+      }
+
       // create custom certificate if custom domain is set
       const waitingTime = Date.now() - doc.updatedAt.getTime()
 
       // create custom domain certificate
       let cert = await this.certService.getRuntimeCertificate(user, doc)
       if (!cert) {
+        if (await this.isApplicationDeleting(doc.appid)) {
+          await this.markDeleting(doc)
+          return
+        }
+
         cert = await this.certService.createRuntimeCertificate(user, doc)
         this.logger.log(`create runtime domain certificate: ${doc.appid}`)
+
+        if (await this.isApplicationDeleting(doc.appid)) {
+          await this.markDeleting(doc)
+          return
+        }
+
         // return to wait for cert to be ready
         return await this.relock(doc.appid, waitingTime)
       }
@@ -118,16 +145,31 @@ export class RuntimeDomainTaskService {
     }
 
     // create ingress if not exists
+    if (await this.isApplicationDeleting(doc.appid)) {
+      await this.markDeleting(doc)
+      return
+    }
+
     const ingress = await this.runtimeGateway.getIngress(doc)
     if (!ingress) {
+      if (await this.isApplicationDeleting(doc.appid)) {
+        await this.markDeleting(doc)
+        return
+      }
+
       const res = await this.runtimeGateway.createIngress(region, doc)
       this.logger.log('runtime default ingress created: ' + doc.appid)
       this.logger.debug(JSON.stringify(res))
+
+      if (await this.isApplicationDeleting(doc.appid)) {
+        await this.markDeleting(doc)
+        return
+      }
     }
 
     // update phase to `Created`
     await db.collection<RuntimeDomain>('RuntimeDomain').updateOne(
-      { _id: doc._id, phase: DomainPhase.Creating },
+      { _id: doc._id, state: DomainState.Active, phase: DomainPhase.Creating },
       {
         $set: {
           phase: DomainPhase.Created,
@@ -301,5 +343,33 @@ export class RuntimeDomainTaskService {
     await db
       .collection<RuntimeDomain>('RuntimeDomain')
       .updateOne({ appid }, { $set: { lockedAt } })
+  }
+
+  private async markDeleting(doc: RuntimeDomain) {
+    const db = SystemDatabase.db
+    await db.collection<RuntimeDomain>('RuntimeDomain').updateOne(
+      { _id: doc._id, phase: DomainPhase.Creating },
+      {
+        $set: {
+          state: DomainState.Deleted,
+          phase: DomainPhase.Deleting,
+          lockedAt: TASK_LOCK_INIT_TIME,
+          updatedAt: new Date(),
+        },
+      },
+    )
+  }
+
+  private async isApplicationDeleting(appid: string) {
+    const app = await SystemDatabase.db
+      .collection<Application>('Application')
+      .findOne({ appid }, { projection: { state: 1, phase: 1 } })
+
+    return (
+      !app ||
+      app.state === ApplicationState.Deleted ||
+      app.phase === ApplicationPhase.Deleting ||
+      app.phase === ApplicationPhase.Deleted
+    )
   }
 }

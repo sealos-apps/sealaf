@@ -14,9 +14,11 @@ import {
   ApplicationPhase,
   ApplicationState,
 } from './entities/application'
-import { DomainPhase } from 'src/gateway/entities/runtime-domain'
+import { DomainPhase, DomainState } from 'src/gateway/entities/runtime-domain'
 import { DedicatedDatabaseService } from 'src/database/dedicated-database/dedicated-database.service'
 import { CloudBinBucketService } from 'src/storage/cloud-bin-bucket.service'
+import { InstanceService } from 'src/instance/instance.service'
+import { ClusterService } from 'src/region/cluster/cluster.service'
 
 @Injectable()
 export class ApplicationTaskService {
@@ -32,6 +34,8 @@ export class ApplicationTaskService {
     private readonly configurationService: ApplicationConfigurationService,
     private readonly bundleService: BundleService,
     private readonly cloudbinService: CloudBinBucketService,
+    private readonly instanceService: InstanceService,
+    private readonly clusterService: ClusterService,
   ) {}
 
   @Cron(CronExpression.EVERY_SECOND)
@@ -77,6 +81,7 @@ export class ApplicationTaskService {
       .collection<Application>('Application')
       .findOneAndUpdate(
         {
+          state: { $ne: ApplicationState.Deleted },
           phase: ApplicationPhase.Creating,
           lockedAt: { $lt: new Date(Date.now() - 1000 * this.lockTimeout) },
         },
@@ -91,6 +96,8 @@ export class ApplicationTaskService {
 
     this.logger.log(`handleCreatingPhase matched app ${appid}, locked it`)
 
+    if (await this.isApplicationDeleting(appid)) return
+
     // get region by appid
     const region = await this.regionService.findByAppId(appid)
     assert(region, `Region ${region.name} not found`)
@@ -98,8 +105,14 @@ export class ApplicationTaskService {
     // reconcile runtime domain
     let runtimeDomain = await this.runtimeDomainService.findOne(appid)
     if (!runtimeDomain) {
+      if (await this.isApplicationDeleting(appid)) return
       this.logger.log(`Creating gateway for application ${appid}`)
       runtimeDomain = await this.runtimeDomainService.create(appid)
+
+      if (await this.isApplicationDeleting(appid)) {
+        await this.runtimeDomainService.deleteOne(appid)
+        return
+      }
     }
 
     // waiting resources' phase to be `Created`
@@ -143,6 +156,7 @@ export class ApplicationTaskService {
       .collection<Application>('Application')
       .findOneAndUpdate(
         {
+          state: ApplicationState.Deleted,
           phase: ApplicationPhase.Deleting,
           lockedAt: { $lt: new Date(Date.now() - 1000 * this.lockTimeout) },
         },
@@ -156,7 +170,9 @@ export class ApplicationTaskService {
     const app = res.value
     const appid = app.appid
     const region = await this.regionService.findByAppId(appid)
-    assert(region, `Region ${region.name} not found`)
+    assert(region, `Region of application ${appid} not found`)
+    const user = await this.clusterService.getUserByAppid(appid)
+    assert(user, `User of application ${appid} not found`)
 
     // delete triggers
     const hadTriggers = await this.triggerService.count(appid)
@@ -164,6 +180,22 @@ export class ApplicationTaskService {
       await this.triggerService.removeAll(appid)
       return await this.unlock(appid)
     }
+
+    // delete runtime domain
+    const runtimeDomain = await this.runtimeDomainService.findOne(appid)
+    if (runtimeDomain) {
+      if (
+        runtimeDomain.state !== DomainState.Deleted ||
+        runtimeDomain.phase !== DomainPhase.Deleted
+      ) {
+        await this.runtimeDomainService.deleteOne(appid)
+        return await this.unlock(appid)
+      }
+    }
+
+    const hadRuntimeResources =
+      await this.instanceService.removeRuntimeResources(appid, user.namespace)
+    if (hadRuntimeResources) return await this.unlock(appid)
 
     // delete cloud functions
     const hadFunctions = await this.functionService.count(appid)
@@ -179,23 +211,16 @@ export class ApplicationTaskService {
       return await this.unlock(appid)
     }
 
+    const dedicatedDatabase = await this.dedicatedDatabaseService.findOne(appid)
+    if (dedicatedDatabase) {
+      await this.dedicatedDatabaseService.remove(appid)
+      return await this.unlock(appid)
+    }
+
     // delete application bundle
     const bundle = await this.bundleService.findOne(appid)
     if (bundle) {
       await this.bundleService.deleteOne(appid)
-      return await this.unlock(appid)
-    }
-
-    // delete runtime domain
-    const runtimeDomain = await this.runtimeDomainService.findOne(appid)
-    if (runtimeDomain) {
-      await this.runtimeDomainService.deleteOne(appid)
-      return await this.unlock(appid)
-    }
-
-    const dedicatedDatabase = await this.dedicatedDatabaseService.findOne(appid)
-    if (dedicatedDatabase) {
-      await this.dedicatedDatabaseService.remove(appid)
       return await this.unlock(appid)
     }
 
@@ -217,7 +242,7 @@ export class ApplicationTaskService {
 
   /**
    * State `Deleted`:
-   * - move phase `Created` | `Started` | `Stopped` to `Deleting`
+   * - move active phases to `Deleting`
    * - delete phase `Deleted` documents
    */
   async handleDeletedState() {
@@ -228,8 +253,11 @@ export class ApplicationTaskService {
         state: ApplicationState.Deleted,
         phase: {
           $in: [
+            ApplicationPhase.Creating,
             ApplicationPhase.Created,
+            ApplicationPhase.Starting,
             ApplicationPhase.Started,
+            ApplicationPhase.Stopping,
             ApplicationPhase.Stopped,
           ],
         },
@@ -260,6 +288,19 @@ export class ApplicationTaskService {
           lockedAt: new Date(Date.now() - 1000 * (this.lockTimeout + 1)),
         },
       },
+    )
+  }
+
+  private async isApplicationDeleting(appid: string) {
+    const app = await SystemDatabase.db
+      .collection<Application>('Application')
+      .findOne({ appid }, { projection: { state: 1, phase: 1 } })
+
+    return (
+      !app ||
+      app.state === ApplicationState.Deleted ||
+      app.phase === ApplicationPhase.Deleting ||
+      app.phase === ApplicationPhase.Deleted
     )
   }
 }

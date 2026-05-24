@@ -1,6 +1,8 @@
 import {
   V1Deployment,
   V1DeploymentSpec,
+  V1ObjectMeta,
+  V1LabelSelector,
   V1ServiceSpec,
   V2HorizontalPodAutoscaler,
   V2HorizontalPodAutoscalerSpec,
@@ -8,11 +10,16 @@ import {
 import { Injectable, Logger } from '@nestjs/common'
 import { LABEL_KEY_APP_ID, MB, ServerConfig } from '../constants'
 import { ClusterService } from 'src/region/cluster/cluster.service'
-import { ApplicationWithRelations } from 'src/application/entities/application'
+import {
+  Application,
+  ApplicationState,
+  ApplicationWithRelations,
+} from 'src/application/entities/application'
 import { ApplicationService } from 'src/application/application.service'
 import * as assert from 'assert'
 import { CloudBinBucketService } from 'src/storage/cloud-bin-bucket.service'
 import { DedicatedDatabaseService } from 'src/database/dedicated-database/dedicated-database.service'
+import { SystemDatabase } from 'src/system-database'
 
 @Injectable()
 export class InstanceService {
@@ -31,21 +38,31 @@ export class InstanceService {
 
   public async create(appid: string) {
     const app = await this.applicationService.findOneUnsafe(appid)
+    if (!app || app.state === ApplicationState.Deleted) return
     const labels: Record<string, string> = this.getRuntimeLabel(appid)
+    const namespace = app.user.namespace
 
     // ensure deployment created
     const res = await this.get(app.appid)
+    if (!res.app || res.app.state === ApplicationState.Deleted) return
+
     if (!res.deployment) {
+      if (await this.isApplicationDeleted(appid)) return
       await this.createDeployment(app, labels)
+      if (await this.removeRuntimeResourcesIfDeleted(appid, namespace)) return
     }
 
     // ensure service created
     if (!res.service) {
+      if (await this.isApplicationDeleted(appid)) return
       await this.createService(app, labels)
+      if (await this.removeRuntimeResourcesIfDeleted(appid, namespace)) return
     }
 
     if (!res.hpa) {
+      if (await this.isApplicationDeleted(appid)) return
       await this.createHorizontalPodAutoscaler(app, labels)
+      await this.removeRuntimeResourcesIfDeleted(appid, namespace)
     }
   }
 
@@ -77,8 +94,35 @@ export class InstanceService {
     this.logger.log(`remove k8s deployment ${deployment?.metadata?.name}`)
   }
 
+  public async removeRuntimeResources(appid: string, namespace: string) {
+    const name = this.getAppDeployName(appid)
+    const appsV1Api = this.cluster.makeAppsV1Api()
+    const coreV1Api = this.cluster.makeCoreV1Api()
+    const hpaV2Api = this.cluster.makeHorizontalPodAutoscalingV2Api()
+    let found = false
+
+    found =
+      (await this.deleteIfExists(() =>
+        hpaV2Api.deleteNamespacedHorizontalPodAutoscaler(name, namespace),
+      )) || found
+    found =
+      (await this.deleteIfExists(() =>
+        coreV1Api.deleteNamespacedService(name, namespace),
+      )) || found
+    found =
+      (await this.deleteIfExists(() =>
+        appsV1Api.deleteNamespacedDeployment(name, namespace),
+      )) || found
+
+    this.logger.log(`remove runtime resources ${name}`)
+    return found
+  }
+
   public async get(appid: string) {
     const app = await this.applicationService.findOneUnsafe(appid)
+    if (!app || app.state === ApplicationState.Deleted) {
+      return { deployment: null, service: null, hpa: null, app }
+    }
     const user = app.user
     const namespace = user.namespace
     if (!namespace) {
@@ -93,8 +137,11 @@ export class InstanceService {
 
   public async restart(appid: string) {
     const app = await this.applicationService.findOneUnsafe(appid)
+    if (!app || app.state === ApplicationState.Deleted) return
     const user = app.user
     const { deployment, hpa, service } = await this.get(appid)
+    if (await this.isApplicationDeleted(appid)) return
+
     if (!deployment || !service) {
       await this.create(appid)
       this.logger.log(
@@ -104,37 +151,57 @@ export class InstanceService {
     }
 
     // reapply deployment
+    const selector = this.getDeploymentSelector(appid, deployment)
+    const selectorLabels = this.getSelectorMatchLabels(selector)
+    const serviceSelectorLabels = this.getRuntimeLabel(appid)
+    const templateLabels = this.getDeploymentTemplateLabels(
+      appid,
+      deployment,
+      selectorLabels,
+      serviceSelectorLabels,
+    )
+    const templateAnnotations = this.getRestartTemplateAnnotations(deployment)
+
     deployment.spec = await this.makeDeploymentSpec(
       app,
-      deployment.spec.template.metadata.labels,
-      deployment.spec.template.metadata.labels,
+      templateLabels,
+      selector,
+      templateAnnotations,
     )
     const appsV1Api = this.cluster.makeAppsV1Api()
+    if (await this.isApplicationDeleted(appid)) return
     const deploymentResult = await appsV1Api.replaceNamespacedDeployment(
       this.getAppDeployName(appid),
       user.namespace,
       deployment,
     )
+    if (await this.removeRuntimeResourcesIfDeleted(appid, user.namespace)) {
+      return
+    }
 
     this.logger.log(
       `restart k8s deployment ${deploymentResult.body?.metadata?.name}`,
     )
 
     // reapply service
-    service.spec = this.makeServiceSpec(
-      deployment.spec.template.metadata.labels,
-    )
+    service.spec = this.makeServiceSpec(serviceSelectorLabels)
     const coreV1Api = this.cluster.makeCoreV1Api()
+    if (await this.isApplicationDeleted(appid)) return
     const serviceResult = await coreV1Api.replaceNamespacedService(
       service.metadata.name,
       user.namespace,
       service,
     )
+    if (await this.removeRuntimeResourcesIfDeleted(appid, user.namespace)) {
+      return
+    }
 
     this.logger.log(`restart k8s service ${serviceResult.body?.metadata?.name}`)
 
     // reapply hpa when application is restarted
+    if (await this.isApplicationDeleted(appid)) return
     await this.reapplyHorizontalPodAutoscaler(app, hpa)
+    await this.removeRuntimeResourcesIfDeleted(appid, user.namespace)
   }
 
   private async createDeployment(
@@ -150,7 +217,9 @@ export class InstanceService {
     // create deployment
     const data = new V1Deployment()
     data.metadata = { name, labels }
-    data.spec = await this.makeDeploymentSpec(app, labels, labels)
+    data.spec = await this.makeDeploymentSpec(app, labels, {
+      matchLabels: labels,
+    })
 
     const appsV1Api = this.cluster.makeAppsV1Api()
     const res = await appsV1Api.createNamespacedDeployment(namespace, data)
@@ -213,17 +282,97 @@ export class InstanceService {
 
   private makeServiceSpec(labels: Record<string, string>) {
     const spec: V1ServiceSpec = {
-      selector: labels,
+      selector: { ...labels },
       type: 'ClusterIP',
       ports: [{ port: 8000, targetPort: 8000, protocol: 'TCP', name: 'http' }],
     }
     return spec
   }
 
+  private async deleteIfExists(fn: () => Promise<unknown>) {
+    try {
+      await fn()
+      return true
+    } catch (error) {
+      if (error?.response?.body?.reason === 'NotFound') return false
+      throw error
+    }
+  }
+
+  private async isApplicationDeleted(appid: string) {
+    const app = await SystemDatabase.db
+      .collection<Application>('Application')
+      .findOne({ appid }, { projection: { state: 1 } })
+
+    return !app || app.state === ApplicationState.Deleted
+  }
+
+  private async removeRuntimeResourcesIfDeleted(
+    appid: string,
+    namespace: string,
+  ) {
+    if (!(await this.isApplicationDeleted(appid))) return false
+
+    await this.removeRuntimeResources(appid, namespace)
+    return true
+  }
+
+  private getDeploymentSelector(
+    appid: string,
+    deployment: V1Deployment,
+  ): V1LabelSelector {
+    return this.copyDeploymentSelector(
+      deployment.spec?.selector || {
+        matchLabels: this.getRuntimeLabel(appid),
+      },
+    )
+  }
+
+  private copyDeploymentSelector(selector: V1LabelSelector): V1LabelSelector {
+    return {
+      ...selector,
+      matchLabels: selector.matchLabels
+        ? { ...selector.matchLabels }
+        : undefined,
+      matchExpressions: selector.matchExpressions
+        ? selector.matchExpressions.map((expression) => ({
+            ...expression,
+            values: expression.values ? [...expression.values] : undefined,
+          }))
+        : undefined,
+    }
+  }
+
+  private getSelectorMatchLabels(selector: V1LabelSelector) {
+    return selector.matchLabels ? { ...selector.matchLabels } : {}
+  }
+
+  private getDeploymentTemplateLabels(
+    appid: string,
+    deployment: V1Deployment,
+    selectorLabels: Record<string, string>,
+    serviceSelectorLabels: Record<string, string>,
+  ) {
+    return {
+      ...this.getRuntimeLabel(appid),
+      ...(deployment.spec?.template?.metadata?.labels || {}),
+      ...serviceSelectorLabels,
+      ...selectorLabels,
+    }
+  }
+
+  private getRestartTemplateAnnotations(deployment: V1Deployment) {
+    return {
+      ...(deployment.spec?.template?.metadata?.annotations || {}),
+      'sealaf.io/restartedAt': new Date().toISOString(),
+    }
+  }
+
   private async makeDeploymentSpec(
     app: ApplicationWithRelations,
     labels: Record<string, string>,
-    matchLabels: Record<string, string>,
+    selector: V1LabelSelector,
+    annotations?: Record<string, string>,
   ): Promise<V1DeploymentSpec> {
     const { appid, region, user } = app
     assert(region, 'region is required')
@@ -313,11 +462,18 @@ export class InstanceService {
       }
     })
 
+    const templateMetadata: V1ObjectMeta = {
+      labels: { ...labels },
+    }
+    if (annotations) {
+      templateMetadata.annotations = { ...annotations }
+    }
+
     const spec: V1DeploymentSpec = {
       replicas: 1,
-      selector: { matchLabels },
+      selector: this.copyDeploymentSelector(selector),
       template: {
-        metadata: { labels },
+        metadata: templateMetadata,
         spec: {
           terminationGracePeriodSeconds: 10,
           automountServiceAccountToken: false,

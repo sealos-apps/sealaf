@@ -597,7 +597,7 @@ export class DedicatedDatabaseService {
     const res = await db
       .collection<DedicatedDatabase>('DedicatedDatabase')
       .findOneAndUpdate(
-        { appid },
+        { appid, state: { $ne: DedicatedDatabaseState.Deleted } },
         { $set: { state, updatedAt: new Date() } },
         { returnDocument: 'after' },
       )
@@ -697,11 +697,12 @@ export class DedicatedDatabaseService {
     const doc = await db
       .collection<DedicatedDatabase>('DedicatedDatabase')
       .findOneAndUpdate(
-        { appid },
+        { appid, state: { $ne: DedicatedDatabaseState.Deleted } },
         {
           $set: {
             state: DedicatedDatabaseState.Deleted,
             phase: DedicatedDatabasePhase.Deleting,
+            lockedAt: TASK_LOCK_INIT_TIME,
             updatedAt: new Date(),
           },
         },

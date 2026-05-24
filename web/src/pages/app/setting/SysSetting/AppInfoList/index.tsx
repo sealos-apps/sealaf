@@ -30,8 +30,10 @@ const AppEnvList: React.FC<AppEnvListProps> = (props = {}) => {
   const [onlyRuntimeFlag, setOnlyRuntimeFlag] = useState(true);
 
   const currentRegion = regions.find((item) => item._id === currentApp?.regionId);
+  const canDeleteApp =
+    currentApp?.phase !== APP_PHASE_STATUS.Deleting && currentApp?.state !== APP_STATUS.Deleted;
 
-  if (currentApp?.state === APP_PHASE_STATUS.Deleted) {
+  if (currentApp?.state === APP_STATUS.Deleted) {
     navigate(Routes.dashboard);
     return <></>;
   }
@@ -131,7 +133,7 @@ const AppEnvList: React.FC<AppEnvListProps> = (props = {}) => {
               </>
             ) : null}
 
-            {currentApp?.phase === APP_PHASE_STATUS.Stopped ? (
+            {canDeleteApp ? (
               <DeleteAppModal
                 item={currentApp}
                 onSuccess={() => {
