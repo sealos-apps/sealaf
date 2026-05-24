@@ -1,0 +1,20 @@
+{{- if .Values.app.enabled }}
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: {{ .Values.app.name }}
+  namespace: {{ .Values.app.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "sealaf.name" . }}
+    {{- include "sealaf.labels" . | nindent 4 }}
+spec:
+  data:
+    desc: {{ .Values.app.description | quote }}
+    url: {{ include "sealaf.webUrl" . | quote }}
+  displayType: normal
+  i18n:
+    {{- toYaml .Values.app.i18n | nindent 4 }}
+  icon: {{ printf "%s/favicon.ico" (include "sealaf.webUrl" .) | quote }}
+  name: {{ .Values.app.displayName | quote }}
+  type: iframe
+{{- end }}

@@ -1,0 +1,10 @@
+Sealaf has been installed.
+
+Web URL:
+  {{ include "sealaf.webUrl" . }}
+
+API URL:
+  {{ include "sealaf.apiUrl" . }}
+
+To upgrade with custom values:
+  helm upgrade -i {{ .Release.Name }} {{ .Chart.Name }} -n {{ .Release.Namespace }} -f values.yaml

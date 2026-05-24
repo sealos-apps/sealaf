@@ -1,0 +1,203 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sealaf.webName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sealaf.webSelectorLabels" . | nindent 4 }}
+    {{- include "sealaf.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "sealaf.webSelectorLabels" . | nindent 6 }}
+  {{- with .Values.web.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "sealaf.webSelectorLabels" . | nindent 8 }}
+        {{- include "sealaf.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ include "sealaf.webName" . }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.web.service.targetPort }}
+              protocol: TCP
+          {{- with .Values.web.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.web.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.web.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sealaf.serverName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sealaf.serverSelectorLabels" . | nindent 4 }}
+    {{- include "sealaf.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.server.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "sealaf.serverSelectorLabels" . | nindent 6 }}
+  {{- with .Values.server.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "sealaf.serverSelectorLabels" . | nindent 8 }}
+        {{- include "sealaf.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "sealaf.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ include "sealaf.serverName" . }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.service.port }}
+              protocol: TCP
+          env:
+            {{- if .Values.mongodb.externalUri }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sealaf.configSecretName" . }}
+                  key: DATABASE_URL
+            {{- else }}
+            - name: MONGODB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sealaf.mongodbRootSecretName" . }}
+                  key: username
+            - name: MONGODB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sealaf.mongodbRootSecretName" . }}
+                  key: password
+            - name: DATABASE_URL
+              value: {{ include "sealaf.mongodbUriTemplate" . | quote }}
+            {{- end }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sealaf.configSecretName" . }}
+                  key: SERVER_JWT_SECRET
+            - name: APP_MONITOR_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sealaf.configSecretName" . }}
+                  key: APP_MONITOR_URL
+            - name: DATABASE_MONITOR_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sealaf.configSecretName" . }}
+                  key: DATABASE_MONITOR_URL
+            - name: API_SERVER_URL
+              value: {{ include "sealaf.apiUrl" . | quote }}
+            - name: JWT_EXPIRES_IN
+              value: {{ .Values.server.jwtExpiresIn | quote }}
+            - name: DEFAULT_REGION_RUNTIME_DOMAIN
+              value: {{ .Values.cloudDomain | quote }}
+            - name: DEFAULT_REGION_TLS_ENABLED
+              value: {{ .Values.server.defaultRegionTlsEnabled | quote }}
+            - name: DEFAULT_REGION_TLS_WILDCARD_CERTIFICATE_SECRET_NAME
+              value: {{ .Values.certSecretName | quote }}
+            - name: DEFAULT_RUNTIME_INIT_IMAGE
+              value: {{ .Values.runtimeInitImage | quote }}
+            - name: DEFAULT_RUNTIME_IMAGE
+              value: {{ .Values.runtimeImage | quote }}
+            {{- with .Values.server.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.server.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.server.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.server.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

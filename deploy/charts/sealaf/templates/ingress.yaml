@@ -1,0 +1,103 @@
+{{- if and .Values.ingress.enabled .Values.ingress.web.enabled }}
+{{- $csp := include "sealaf.contentSecurityPolicy" . -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.ingress.web.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "sealaf.webName" . }}
+    {{- include "sealaf.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/ingress.class: {{ .Values.ingress.className | quote }}
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_clear_headers "X-Frame-Options:";
+      more_set_headers "Content-Security-Policy: {{ $csp }}";
+      more_set_headers "X-Xss-Protection: 1; mode=block";
+    higress.io/response-header-control-remove: X-Frame-Options
+    higress.io/response-header-control-update: |
+      Content-Security-Policy "{{ $csp }}"
+      X-Xss-Protection "1; mode=block"
+    {{- with .Values.ingress.extraAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    - host: {{ include "sealaf.webHost" . | quote }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: {{ include "sealaf.webName" . }}
+                port:
+                  number: {{ .Values.web.service.port }}
+          - path: /v1/
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "sealaf.serverName" . }}
+                port:
+                  number: {{ .Values.server.service.port }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ include "sealaf.webHost" . | quote }}
+      secretName: {{ .Values.certSecretName }}
+  {{- end }}
+{{- end }}
+{{- if and .Values.ingress.enabled .Values.ingress.api.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.ingress.api.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "sealaf.serverName" . }}
+    {{- include "sealaf.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/ingress.class: {{ .Values.ingress.className | quote }}
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    {{- with .Values.ingress.extraAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ include "sealaf.apiHost" . | quote }}
+      secretName: {{ .Values.certSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ include "sealaf.apiHost" . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "sealaf.serverName" . }}
+                port:
+                  number: {{ .Values.server.service.port }}
+{{- end }}

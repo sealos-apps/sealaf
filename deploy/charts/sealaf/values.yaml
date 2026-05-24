@@ -1,0 +1,227 @@
+# Default values for Sealaf.
+
+nameOverride: ""
+fullnameOverride: ""
+
+cloudDomain: "127.0.0.1.nip.io"
+cloudPort: ""
+certSecretName: "wildcard-cert"
+
+appMonitorUrl: "http://launchpad-monitor.sealos.svc.cluster.local:8428/query"
+databaseMonitorUrl: "http://database-monitor.sealos.svc.cluster.local:9090/query"
+runtimeInitImage: "docker.io/lafyun/runtime-node-init:latest"
+runtimeImage: "docker.io/lafyun/runtime-node:latest"
+
+# Leave empty to auto-generate on first install and reuse the existing Secret on upgrade.
+# deploy/install.sh sets this explicitly so Sealos package upgrades keep a stable key.
+serverJwtSecret: ""
+
+imagePullSecrets: []
+
+secret:
+  create: true
+  existingSecret: ""
+  name: "sealaf-config"
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: "sealaf-sa"
+
+rbac:
+  create: true
+  name: "sealaf-role"
+  bindingName: "sealaf-rolebinding"
+  rules:
+    - apiGroups: ["apps"]
+      resources: ["deployments"]
+      verbs: ["create", "delete", "get", "patch", "update"]
+    - apiGroups: [""]
+      resources: ["services"]
+      verbs: ["create", "delete", "get", "patch", "update"]
+    - apiGroups: [""]
+      resources: ["secrets"]
+      verbs: ["get"]
+    - apiGroups: ["cert-manager.io"]
+      resources: ["issuers", "certificates"]
+      verbs: ["create", "delete", "get"]
+    - apiGroups: ["apps.kubeblocks.io"]
+      resources: ["clusters", "opsrequests"]
+      verbs: ["create", "delete", "get", "patch", "update"]
+    - apiGroups: ["objectstorage.sealos.io"]
+      resources: ["objectstorageusers", "objectstoragebuckets"]
+      verbs: ["create", "delete", "get", "watch"]
+    - apiGroups: [""]
+      resources: ["pods", "pods/log"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["rbac.authorization.k8s.io"]
+      resources: ["rolebindings"]
+      verbs: ["get"]
+    - apiGroups: ["networking.k8s.io"]
+      resources: ["ingresses"]
+      verbs: ["create", "delete", "get", "patch", "update"]
+    - apiGroups: ["batch"]
+      resources: ["cronjobs"]
+      verbs: ["create", "delete", "get", "patch", "update"]
+    - apiGroups: ["autoscaling"]
+      resources: ["horizontalpodautoscalers"]
+      verbs: ["create", "delete", "get", "patch", "update"]
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext: {}
+securityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+web:
+  name: "sealaf-web"
+  replicaCount: 1
+  image:
+    repository: "docker.io/zacharywin/sealaf-web"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 80
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 20m
+      memory: 25Mi
+  livenessProbe:
+    httpGet:
+      path: /
+      port: http
+      scheme: HTTP
+    timeoutSeconds: 1
+    periodSeconds: 10
+    successThreshold: 1
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /
+      port: http
+      scheme: HTTP
+    timeoutSeconds: 1
+    periodSeconds: 10
+    successThreshold: 1
+    failureThreshold: 3
+
+server:
+  name: "sealaf-server"
+  replicaCount: 1
+  image:
+    repository: "docker.io/zacharywin/sealaf-server"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3000
+    targetPort: http
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  jwtExpiresIn: "7d"
+  defaultRegionTlsEnabled: "true"
+  extraEnv: []
+  resources:
+    limits:
+      cpu: "1"
+      memory: 2Gi
+    requests:
+      cpu: 100m
+      memory: 204Mi
+  livenessProbe:
+    httpGet:
+      path: /v1/regions
+      port: http
+      scheme: HTTP
+    timeoutSeconds: 1
+    periodSeconds: 10
+    successThreshold: 1
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /v1/regions
+      port: http
+      scheme: HTTP
+    timeoutSeconds: 1
+    periodSeconds: 10
+    successThreshold: 1
+    failureThreshold: 3
+
+mongodb:
+  enabled: true
+  # Set this to use an external MongoDB and skip the KubeBlocks Cluster.
+  externalUri: ""
+  # serviceVersion: newer KubeBlocks Cluster API.
+  # clusterVersionRef: older KubeBlocks Cluster API.
+  apiMode: "serviceVersion"
+  clusterName: "sealaf-mongodb"
+  clusterDefinitionRef: "mongodb"
+  clusterVersionRef: "mongodb-5.0"
+  componentName: "mongodb"
+  serviceVersion: "8.0.4"
+  database: "sys_db"
+  port: 27017
+  serviceAccountName: "sealaf-mongodb"
+  terminationPolicy: Delete
+  labels:
+    kb.io/database: mongodb-8.0.4
+  affinity:
+    podAntiAffinity: Preferred
+    tenancy: SharedNode
+    topologyKeys:
+      - kubernetes.io/hostname
+  replicas: 1
+  monitor: true
+  resources:
+    limits:
+      cpu: "1"
+      memory: 2Gi
+    requests:
+      cpu: "0.5"
+      memory: 1Gi
+  storage:
+    name: data
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  tls:
+    enabled: true
+  extraAnnotations: {}
+  web:
+    enabled: true
+    name: "sealaf-web"
+  api:
+    enabled: true
+    name: "sealaf-server"
+
+app:
+  enabled: false
+  namespace: app-system
+  name: sealaf
+  displayName: "Function Service"
+  description: "Cloud development"
+  i18n:
+    zh:
+      name: "云开发"
+    zh-Hans:
+      name: "云开发"

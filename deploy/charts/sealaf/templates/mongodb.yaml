@@ -1,0 +1,47 @@
+{{- if and .Values.mongodb.enabled (not .Values.mongodb.externalUri) }}
+{{- $apiMode := default "serviceVersion" .Values.mongodb.apiMode }}
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  name: {{ .Values.mongodb.clusterName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.mongodb.clusterName }}
+    {{- include "sealaf.labels" . | nindent 4 }}
+    {{- with .Values.mongodb.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  finalizers:
+    - cluster.kubeblocks.io/finalizer
+spec:
+  {{- if eq $apiMode "clusterVersionRef" }}
+  clusterDefinitionRef: {{ .Values.mongodb.clusterDefinitionRef }}
+  clusterVersionRef: {{ .Values.mongodb.clusterVersionRef }}
+  {{- end }}
+  affinity:
+    {{- toYaml .Values.mongodb.affinity | nindent 4 }}
+  componentSpecs:
+    - name: {{ .Values.mongodb.componentName }}
+      {{- if eq $apiMode "clusterVersionRef" }}
+      componentDefRef: {{ .Values.mongodb.componentName }}
+      {{- else }}
+      componentDef: mongodb
+      {{- end }}
+      monitor: {{ .Values.mongodb.monitor }}
+      replicas: {{ .Values.mongodb.replicas }}
+      resources:
+        {{- toYaml .Values.mongodb.resources | nindent 8 }}
+      serviceAccountName: {{ .Values.mongodb.serviceAccountName }}
+      {{- if ne $apiMode "clusterVersionRef" }}
+      serviceVersion: {{ .Values.mongodb.serviceVersion }}
+      {{- end }}
+      volumeClaimTemplates:
+        - name: {{ .Values.mongodb.storage.name }}
+          spec:
+            accessModes:
+              {{- toYaml .Values.mongodb.storage.accessModes | nindent 14 }}
+            resources:
+              requests:
+                storage: {{ .Values.mongodb.storage.size }}
+  terminationPolicy: {{ .Values.mongodb.terminationPolicy }}
+{{- end }}
