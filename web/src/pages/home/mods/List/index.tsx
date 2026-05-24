@@ -57,6 +57,8 @@ function List(props: { appList: TApplicationItem[] }) {
   );
 
   const [onlyRuntimeFlag, setOnlyRuntimeFlag] = useState(true);
+  const canDeleteApp = (item: TApplicationItem) =>
+    item.phase !== APP_PHASE_STATUS.Deleting && item.state !== APP_STATUS.Deleted;
 
   return (
     <>
@@ -316,19 +318,18 @@ function List(props: { appList: TApplicationItem[] }) {
                             </ConfirmButton>
                           )}
 
-                        {item.phase === APP_PHASE_STATUS.Stopped &&
-                          item.state === APP_STATUS.Stopped && (
-                            <DeleteAppModal
-                              item={item}
-                              onSuccess={() => queryClient.invalidateQueries(APP_LIST_QUERY_KEY)}
-                            >
-                              <MenuItem minH="40px" display={"block"}>
-                                <a className="block text-error-500" href="/delete">
-                                  {t("DeleteApp")}
-                                </a>
-                              </MenuItem>
-                            </DeleteAppModal>
-                          )}
+                        {canDeleteApp(item) && (
+                          <DeleteAppModal
+                            item={item}
+                            onSuccess={() => queryClient.invalidateQueries(APP_LIST_QUERY_KEY)}
+                          >
+                            <MenuItem minH="40px" display={"block"}>
+                              <a className="block text-error-500" href="/delete">
+                                {t("DeleteApp")}
+                              </a>
+                            </MenuItem>
+                          </DeleteAppModal>
+                        )}
                       </MenuList>
                     </Menu>
                   </div>

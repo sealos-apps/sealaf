@@ -21,6 +21,10 @@ import { ApplicationService } from '../application/application.service'
 import { ApplicationConfigurationService } from 'src/application/configuration.service'
 import { FunctionService } from 'src/function/function.service'
 import { User } from 'src/user/entities/user'
+import {
+  ApplicationPhase,
+  ApplicationState,
+} from 'src/application/entities/application'
 
 interface FindFunctionTemplatesParams {
   asc: number
@@ -1588,13 +1592,21 @@ export class FunctionTemplateService {
 
   // Verify the relationship between the user and the appid
   async applicationAuthGuard(appid, userid) {
-    const app = await this.appService.findOne(appid)
+    const app = await this.appService.findOneRaw(appid)
     if (!app) {
       return false
     }
 
     const author_id = app.createdBy?.toString()
     if (author_id !== userid.toString()) {
+      return false
+    }
+
+    if (
+      app.state === ApplicationState.Deleted ||
+      app.phase === ApplicationPhase.Deleting ||
+      app.phase === ApplicationPhase.Deleted
+    ) {
       return false
     }
 

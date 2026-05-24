@@ -11,6 +11,11 @@ import { Injectable, Logger } from '@nestjs/common'
 import { RegionService } from 'src/region/region.service'
 import { ClusterService } from 'src/region/cluster/cluster.service'
 import { formatK8sErrorAsJson } from 'src/utils/k8s-error'
+import {
+  Application,
+  ApplicationPhase,
+  ApplicationState,
+} from 'src/application/entities/application'
 
 @Injectable()
 export class DedicatedDatabaseTaskService {
@@ -72,6 +77,7 @@ export class DedicatedDatabaseTaskService {
     if (!res.value) return
     const data = res.value
     const appid = data.appid
+    if (await this.isDeleting(appid)) return
 
     const region = await this.regionService.findByAppId(appid)
     const user = await this.clusterService.getUserByAppid(appid)
@@ -81,6 +87,7 @@ export class DedicatedDatabaseTaskService {
 
     // create dedicated database
     if (!manifest) {
+      if (await this.isDeleting(appid)) return
       try {
         await this.dbService.applyDeployManifest(region, user, appid)
       } catch (error) {
@@ -123,6 +130,7 @@ export class DedicatedDatabaseTaskService {
         return
       }
 
+      if (await this.isDeleting(appid)) return
       try {
         await this.dbService.applyKubeBlockOpsRequestManifest(
           region,
@@ -148,6 +156,8 @@ export class DedicatedDatabaseTaskService {
       return
     }
 
+    if (await this.isDeleting(appid)) return
+
     await this.dbService.deleteKubeBlockOpsManifest(
       region,
       user,
@@ -158,6 +168,7 @@ export class DedicatedDatabaseTaskService {
     await this.db.collection<DedicatedDatabase>('DedicatedDatabase').updateOne(
       {
         appid,
+        state: DedicatedDatabaseState.Running,
         phase: DedicatedDatabasePhase.Starting,
       },
       {
@@ -178,6 +189,7 @@ export class DedicatedDatabaseTaskService {
       .collection<DedicatedDatabase>('DedicatedDatabase')
       .findOneAndUpdate(
         {
+          state: DedicatedDatabaseState.Deleted,
           phase: DedicatedDatabasePhase.Deleting,
           lockedAt: {
             $lt: new Date(Date.now() - this.lockTimeout * 1000),
@@ -206,6 +218,7 @@ export class DedicatedDatabaseTaskService {
     await this.db.collection<DedicatedDatabase>('DedicatedDatabase').updateOne(
       {
         appid,
+        state: DedicatedDatabaseState.Deleted,
         phase: DedicatedDatabasePhase.Deleting,
       },
       {
@@ -223,6 +236,7 @@ export class DedicatedDatabaseTaskService {
       .collection<DedicatedDatabase>('DedicatedDatabase')
       .findOneAndUpdate(
         {
+          state: DedicatedDatabaseState.Stopped,
           phase: DedicatedDatabasePhase.Stopping,
           lockedAt: {
             $lt: new Date(Date.now() - this.lockTimeout * 1000),
@@ -238,6 +252,7 @@ export class DedicatedDatabaseTaskService {
     if (!res.value) return
     const data = res.value
     const appid = data.appid
+    if (await this.isDeleting(appid)) return
 
     const region = await this.regionService.findByAppId(appid)
     const user = await this.clusterService.getUserByAppid(appid)
@@ -252,6 +267,8 @@ export class DedicatedDatabaseTaskService {
         .updateOne(
           {
             appid,
+            state: DedicatedDatabaseState.Stopped,
+            phase: DedicatedDatabasePhase.Stopping,
           },
           {
             $set: {
@@ -283,6 +300,7 @@ export class DedicatedDatabaseTaskService {
         return
       }
 
+      if (await this.isDeleting(appid)) return
       try {
         await this.dbService.applyKubeBlockOpsRequestManifest(
           region,
@@ -307,6 +325,7 @@ export class DedicatedDatabaseTaskService {
     await this.db.collection<DedicatedDatabase>('DedicatedDatabase').updateOne(
       {
         appid: data.appid,
+        state: DedicatedDatabaseState.Stopped,
         phase: DedicatedDatabasePhase.Stopping,
       },
       {
@@ -328,7 +347,12 @@ export class DedicatedDatabaseTaskService {
       {
         state: DedicatedDatabaseState.Deleted,
         phase: {
-          $in: [DedicatedDatabasePhase.Started, DedicatedDatabasePhase.Stopped],
+          $in: [
+            DedicatedDatabasePhase.Starting,
+            DedicatedDatabasePhase.Started,
+            DedicatedDatabasePhase.Stopping,
+            DedicatedDatabasePhase.Stopped,
+          ],
         },
       },
       {
@@ -403,6 +427,8 @@ export class DedicatedDatabaseTaskService {
     const waitingTime = Date.now() - ddb.updatedAt.getTime()
 
     const appid = ddb.appid
+    if (await this.isDeleting(appid)) return
+
     const region = await this.regionService.findByAppId(appid)
     const user = await this.clusterService.getUserByAppid(appid)
 
@@ -415,6 +441,8 @@ export class DedicatedDatabaseTaskService {
         .updateOne(
           {
             appid,
+            state: DedicatedDatabaseState.Restarting,
+            phase: DedicatedDatabasePhase.Started,
           },
           {
             $set: {
@@ -428,6 +456,8 @@ export class DedicatedDatabaseTaskService {
       return
     }
 
+    if (await this.isDeleting(appid)) return
+
     const OpsRequestManifest =
       await this.dbService.getKubeBlockOpsRequestManifest(
         region,
@@ -437,6 +467,7 @@ export class DedicatedDatabaseTaskService {
       )
 
     if (!OpsRequestManifest) {
+      if (await this.isDeleting(appid)) return
       try {
         await this.dbService.applyKubeBlockOpsRequestManifest(
           region,
@@ -455,6 +486,8 @@ export class DedicatedDatabaseTaskService {
       return
     }
 
+    if (await this.isDeleting(appid)) return
+
     const ddbDeployManifest = await this.dbService.getDeployManifest(
       region,
       user,
@@ -468,6 +501,8 @@ export class DedicatedDatabaseTaskService {
         .updateOne(
           {
             appid,
+            state: DedicatedDatabaseState.Restarting,
+            phase: DedicatedDatabasePhase.Started,
           },
           {
             $set: {
@@ -490,6 +525,8 @@ export class DedicatedDatabaseTaskService {
       return
     }
 
+    if (await this.isDeleting(appid)) return
+
     await this.dbService.deleteKubeBlockOpsManifest(
       region,
       user,
@@ -500,6 +537,8 @@ export class DedicatedDatabaseTaskService {
     await db.collection<DedicatedDatabase>('DedicatedDatabase').updateOne(
       {
         appid: appid,
+        state: DedicatedDatabaseState.Restarting,
+        phase: DedicatedDatabasePhase.Started,
       },
       {
         $set: {
@@ -528,6 +567,7 @@ export class DedicatedDatabaseTaskService {
     if (!res.value) return
     const data = res.value
     const appid = data.appid
+    if (await this.isDeleting(appid)) return
 
     const region = await this.regionService.findByAppId(appid)
     const user = await this.clusterService.getUserByAppid(appid)
@@ -542,6 +582,8 @@ export class DedicatedDatabaseTaskService {
         .updateOne(
           {
             appid,
+            state: DedicatedDatabaseState.Updating,
+            phase: DedicatedDatabasePhase.Started,
           },
           {
             $set: {
@@ -564,6 +606,7 @@ export class DedicatedDatabaseTaskService {
       await this.dbService.isDeployManifestChanged(region, user, appid)
 
     if (isDeployManifestChanged) {
+      if (await this.isDeleting(appid)) return
       await this.dbService.updateDeployManifest(region, user, appid)
       await this.relock(appid, waitingTime)
       return
@@ -579,6 +622,8 @@ export class DedicatedDatabaseTaskService {
       await this.relock(appid, waitingTime)
       return
     }
+
+    if (await this.isDeleting(appid)) return
 
     await this.dbService.deleteKubeBlockOpsManifestForSpec(
       region,
@@ -602,6 +647,8 @@ export class DedicatedDatabaseTaskService {
     await this.db.collection<DedicatedDatabase>('DedicatedDatabase').updateOne(
       {
         appid,
+        state: DedicatedDatabaseState.Updating,
+        phase: DedicatedDatabasePhase.Started,
       },
       {
         $set: {
@@ -631,7 +678,31 @@ export class DedicatedDatabaseTaskService {
     const lockedAt = new Date(Date.now() - 1000 * this.lockTimeout + lockedTime)
     await db
       .collection<DedicatedDatabase>('DedicatedDatabase')
-      .updateOne({ appid: appid }, { $set: { lockedAt } })
+      .updateOne(
+        { appid: appid, state: { $ne: DedicatedDatabaseState.Deleted } },
+        { $set: { lockedAt } },
+      )
+  }
+
+  private async isDeleting(appid: string) {
+    const app = await this.db
+      .collection<Application>('Application')
+      .findOne({ appid }, { projection: { state: 1, phase: 1 } })
+
+    if (
+      !app ||
+      app.state === ApplicationState.Deleted ||
+      app.phase === ApplicationPhase.Deleting ||
+      app.phase === ApplicationPhase.Deleted
+    ) {
+      return true
+    }
+
+    const ddb = await this.db
+      .collection<DedicatedDatabase>('DedicatedDatabase')
+      .findOne({ appid }, { projection: { state: 1 } })
+
+    return !ddb || ddb.state === DedicatedDatabaseState.Deleted
   }
 
   private getHourTime() {

@@ -16,8 +16,6 @@ import {
 } from "@chakra-ui/react";
 import { useMutation } from "@tanstack/react-query";
 
-import { APP_PHASE_STATUS } from "@/constants";
-
 import { TApplicationItem } from "@/apis/typing";
 import { ApplicationControllerDelete } from "@/apis/v1/applications";
 import useGlobalStore from "@/pages/globalStore";
@@ -50,11 +48,7 @@ function DeleteAppModal(props: {
       {React.cloneElement(props.children, {
         onClick: (event: any) => {
           event?.preventDefault();
-          if (item.phase === APP_PHASE_STATUS.Stopped) {
-            onOpen();
-          } else {
-            showError(t("PleaseCloseApplicationFirst"));
-          }
+          onOpen();
         },
       })}
 

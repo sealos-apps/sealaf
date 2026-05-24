@@ -208,6 +208,16 @@ export class ApplicationService {
     return doc
   }
 
+  async findOneRaw(appid: string) {
+    const db = SystemDatabase.db
+
+    const doc = await db
+      .collection<Application>('Application')
+      .findOne({ appid })
+
+    return doc
+  }
+
   async findOneUnsafe(appid: string) {
     const db = SystemDatabase.db
 
@@ -310,7 +320,7 @@ export class ApplicationService {
     const res = await db
       .collection<Application>('Application')
       .findOneAndUpdate(
-        { appid },
+        { appid, state: { $ne: ApplicationState.Deleted } },
         { $set: { state, updatedAt: new Date() } },
         { returnDocument: 'after' },
       )
@@ -371,7 +381,14 @@ export class ApplicationService {
       .collection<Application>('Application')
       .findOneAndUpdate(
         { appid },
-        { $set: { state: ApplicationState.Deleted, updatedAt: new Date() } },
+        {
+          $set: {
+            state: ApplicationState.Deleted,
+            phase: ApplicationPhase.Deleting,
+            lockedAt: TASK_LOCK_INIT_TIME,
+            updatedAt: new Date(),
+          },
+        },
         { returnDocument: 'after' },
       )
 

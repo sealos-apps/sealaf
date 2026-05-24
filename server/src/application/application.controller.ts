@@ -52,6 +52,7 @@ import { InstanceService } from 'src/instance/instance.service'
 import { BindCustomDomainDto } from './dto/bind-custom-domain.dto'
 import { ClusterService } from 'src/region/cluster/cluster.service'
 import { SealosManagerGuard } from 'src/authentication/sealos-manager.guard'
+import { AllowDeletingApplication } from 'src/authentication/allow-deleting-application.decorator'
 import { DedicatedDatabaseService } from 'src/database/dedicated-database/dedicated-database.service'
 import {
   DedicatedDatabasePhase,
@@ -510,19 +511,9 @@ export class ApplicationController {
   @ApiOperation({ summary: 'Delete an application' })
   @ApiResponseObject(Application)
   @UseGuards(JwtAuthGuard, SealosManagerGuard, ApplicationAuthGuard)
+  @AllowDeletingApplication()
   @Delete(':appid')
-  async delete(
-    @Param('appid') appid: string,
-    @InjectApplication() app: ApplicationWithRelations,
-  ) {
-    // check: only stopped application can be deleted
-    if (
-      app.state !== ApplicationState.Stopped &&
-      app.phase !== ApplicationPhase.Stopped
-    ) {
-      return ResponseUtil.error('The app is not stopped, can not delete it')
-    }
-
+  async delete(@Param('appid') appid: string) {
     const doc = await this.application.remove(appid)
     return ResponseUtil.ok(doc)
   }

@@ -106,6 +106,7 @@ export class InstanceTaskService {
       .collection<Application>('Application')
       .findOneAndUpdate(
         {
+          state: { $ne: ApplicationState.Deleted },
           phase: ApplicationPhase.Starting,
           lockedAt: { $lt: new Date(Date.now() - 1000 * this.lockTimeout) },
         },
@@ -122,23 +123,32 @@ export class InstanceTaskService {
       const appCreateTimeOut = parseInt(appCreateTimeConf.value) * 60 * 1000
 
       if (waitingTime > appCreateTimeOut) {
-        await db.collection<Application>('Application').updateOne(
-          { appid: app.appid },
-          {
-            $set: {
-              state: ApplicationState.Stopped,
-              phase: ApplicationPhase.Stopping,
-              lockedAt: TASK_LOCK_INIT_TIME,
-              updatedAt: new Date(),
+        const updateResult = await db
+          .collection<Application>('Application')
+          .updateOne(
+            {
+              appid: app.appid,
+              state: app.state,
+              phase: ApplicationPhase.Starting,
             },
-          },
-        )
+            {
+              $set: {
+                state: ApplicationState.Stopped,
+                phase: ApplicationPhase.Stopping,
+                lockedAt: TASK_LOCK_INIT_TIME,
+                updatedAt: new Date(),
+              },
+            },
+          )
+
+        if (updateResult.modifiedCount === 0) return
 
         await db
           .collection<DedicatedDatabase>('DedicatedDatabase')
           .findOneAndUpdate(
             {
               appid: app.appid,
+              state: { $ne: DedicatedDatabaseState.Deleted },
             },
             {
               $set: {
@@ -155,6 +165,8 @@ export class InstanceTaskService {
 
     const appid = app.appid
 
+    if (await this.isApplicationDeleted(appid)) return
+
     const ddb = await this.dedicatedDatabaseService.findOne(appid)
 
     if (!ddb) {
@@ -170,10 +182,14 @@ export class InstanceTaskService {
       return
     }
 
+    if (await this.isApplicationDeleted(appid)) return
+
     // create instance
     await this.instanceService.create(app.appid)
 
     const instance = await this.instanceService.get(appid)
+    if (!instance.app || instance.app.state === ApplicationState.Deleted) return
+
     const unavailable =
       instance.deployment?.status?.unavailableReplicas || false
     if (unavailable) {
@@ -194,6 +210,8 @@ export class InstanceTaskService {
       await this.relock(appid, waitingTime)
       return
     }
+
+    if (await this.isApplicationDeleted(appid)) return
 
     // active runtime domain
     await db
@@ -219,7 +237,7 @@ export class InstanceTaskService {
 
     // update application state
     await db.collection<Application>('Application').updateOne(
-      { appid, phase: ApplicationPhase.Starting },
+      { appid, state: app.state, phase: ApplicationPhase.Starting },
       {
         $set: {
           state: toState,
@@ -268,6 +286,7 @@ export class InstanceTaskService {
       .collection<Application>('Application')
       .findOneAndUpdate(
         {
+          state: { $ne: ApplicationState.Deleted },
           phase: ApplicationPhase.Stopping,
           lockedAt: { $lt: new Date(Date.now() - 1000 * this.lockTimeout) },
         },
@@ -278,6 +297,8 @@ export class InstanceTaskService {
     if (!res.value) return
     const app = res.value
     const appid = app.appid
+
+    if (await this.isApplicationDeleted(appid)) return
 
     const waitingTime = Date.now() - app.updatedAt.getTime()
 
@@ -329,7 +350,7 @@ export class InstanceTaskService {
 
     // update application phase to `Stopped`
     await db.collection<Application>('Application').updateOne(
-      { appid, phase: ApplicationPhase.Stopping },
+      { appid, state: app.state, phase: ApplicationPhase.Stopping },
       {
         $set: {
           phase: ApplicationPhase.Stopped,
@@ -364,12 +385,16 @@ export class InstanceTaskService {
     if (!res.value) return
     const app = res.value
 
+    if (await this.isApplicationDeleted(app.appid)) return
+
     await this.instanceService.restart(app.appid)
 
     // update application phase to `Starting`
     await db.collection<Application>('Application').updateOne(
       {
         appid: app.appid,
+        state: ApplicationState.Restarting,
+        phase: ApplicationPhase.Started,
       },
       {
         $set: {
@@ -398,7 +423,18 @@ export class InstanceTaskService {
     const lockedAt = new Date(Date.now() - 1000 * this.lockTimeout + lockedTime)
     await db
       .collection<Application>('Application')
-      .updateOne({ appid: appid }, { $set: { lockedAt } })
+      .updateOne(
+        { appid: appid, state: { $ne: ApplicationState.Deleted } },
+        { $set: { lockedAt } },
+      )
+  }
+
+  private async isApplicationDeleted(appid: string) {
+    const app = await SystemDatabase.db
+      .collection<Application>('Application')
+      .findOne({ appid }, { projection: { state: 1 } })
+
+    return !app || app.state === ApplicationState.Deleted
   }
 
   private getHourTime() {
