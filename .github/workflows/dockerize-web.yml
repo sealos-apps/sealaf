@@ -101,7 +101,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/${{ github.repository_owner }}/sealaf-web
+            ghcr.io/${{ github.repository }}/sealaf-web
             ${{ env.DOCKERHUB_USERNAME && format('docker.io/{0}/sealaf-web', env.DOCKERHUB_USERNAME) || '' }}
 
       - name: Build for ${{ matrix.arch }}
@@ -115,7 +115,7 @@ jobs:
           # PR builds: load locally, Main builds: push by digest
           push: false
           load: ${{ github.event_name == 'pull_request' }}
-          outputs: ${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' && format('type=image,"name=ghcr.io/{0}/sealaf-web{1}",name-canonical=true,push-by-digest=true,push=true', github.repository_owner, env.DOCKERHUB_USERNAME && format(',docker.io/{0}/sealaf-web', env.DOCKERHUB_USERNAME) || '') || '' }}
+          outputs: ${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' && format('type=image,"name=ghcr.io/{0}/sealaf-web{1}",name-canonical=true,push-by-digest=true,push=true', github.repository, env.DOCKERHUB_USERNAME && format(',docker.io/{0}/sealaf-web', env.DOCKERHUB_USERNAME) || '') || '' }}
 
       - name: Export digest
         if: ${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }}
@@ -230,7 +230,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/${{ github.repository_owner }}/sealaf-web
+            ghcr.io/${{ github.repository }}/sealaf-web
             ${{ env.DOCKERHUB_USERNAME && format('docker.io/{0}/sealaf-web', env.DOCKERHUB_USERNAME) || '' }}
           tags: |
             type=ref,event=branch
@@ -247,10 +247,10 @@ jobs:
         run: |
           for TAG in $DOCKER_METADATA_OUTPUT_TAGS; do
             docker buildx imagetools create -t $TAG \
-              $(printf 'ghcr.io/${{ github.repository_owner }}/sealaf-web@sha256:%s ' *)
+              $(printf 'ghcr.io/${{ github.repository }}/sealaf-web@sha256:%s ' *)
             sleep 3
           done
 
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/sealaf-web:${{ steps.meta.outputs.version }}
+          docker buildx imagetools inspect ghcr.io/${{ github.repository }}/sealaf-web:${{ steps.meta.outputs.version }}

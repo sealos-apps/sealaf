@@ -20,7 +20,7 @@ permissions:
   packages: write
 
 env:
-  GHCR_SEALOS_IMAGE: ghcr.io/${{ github.repository_owner }}/sealaf
+  GHCR_SEALOS_IMAGE: ghcr.io/${{ github.repository }}/sealaf-cluster
   DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USERNAME }}
 
 concurrency:
@@ -293,8 +293,11 @@ jobs:
         run: |
           set -euo pipefail
           sudo sealos login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" ghcr.io
-          sed -i -E "/repository: \"ghcr.io\/${{ github.repository_owner }}\/sealaf-web\"/ { n; s/tag: \".*\"/tag: \"${{ needs.prepare.outputs.image_tag }}\"/; }" charts/sealaf/values.yaml
-          sed -i -E "/repository: \"ghcr.io\/${{ github.repository_owner }}\/sealaf-server\"/ { n; s/tag: \".*\"/tag: \"${{ needs.prepare.outputs.image_tag }}\"/; }" charts/sealaf/values.yaml
+          WEB_IMAGE="ghcr.io/${{ github.repository }}/sealaf-web"
+          SERVER_IMAGE="ghcr.io/${{ github.repository }}/sealaf-server"
+          IMAGE_TAG="${{ needs.prepare.outputs.image_tag }}"
+          sed -i -E "/repository: \"${WEB_IMAGE//\//\\/}\"/ { n; s/tag: \".*\"/tag: \"${IMAGE_TAG}\"/; }" charts/sealaf/values.yaml
+          sed -i -E "/repository: \"${SERVER_IMAGE//\//\\/}\"/ { n; s/tag: \".*\"/tag: \"${IMAGE_TAG}\"/; }" charts/sealaf/values.yaml
           sudo sealos registry save --registry-dir=registry --arch ${{ matrix.arch }} .
 
       - name: Set up Docker Buildx
@@ -311,7 +314,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           tags: |
             ${{ env.GHCR_SEALOS_IMAGE }}:${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}
-            ${{ env.DOCKERHUB_USERNAME != '' && format('docker.io/{0}/sealaf:{1}-{2}', env.DOCKERHUB_USERNAME, needs.prepare.outputs.cluster_tag, matrix.arch) || '' }}
+            ${{ env.DOCKERHUB_USERNAME != '' && format('docker.io/{0}/sealaf-cluster:{1}-{2}', env.DOCKERHUB_USERNAME, needs.prepare.outputs.cluster_tag, matrix.arch) || '' }}
           labels: |
             org.opencontainers.image.revision=${{ needs.prepare.outputs.source_sha }}
             runnumber=${{ github.run_id }}
@@ -374,9 +377,9 @@ jobs:
           set -euo pipefail
           CLUSTER_TAG="${{ needs.prepare.outputs.cluster_tag }}"
           docker buildx imagetools create \
-            -t "docker.io/${DOCKERHUB_USERNAME}/sealaf:${CLUSTER_TAG}" \
-            "docker.io/${DOCKERHUB_USERNAME}/sealaf:${CLUSTER_TAG}-amd64" \
-            "docker.io/${DOCKERHUB_USERNAME}/sealaf:${CLUSTER_TAG}-arm64"
+            -t "docker.io/${DOCKERHUB_USERNAME}/sealaf-cluster:${CLUSTER_TAG}" \
+            "docker.io/${DOCKERHUB_USERNAME}/sealaf-cluster:${CLUSTER_TAG}-amd64" \
+            "docker.io/${DOCKERHUB_USERNAME}/sealaf-cluster:${CLUSTER_TAG}-arm64"
 
       - name: Update latest tag
         if: ${{ needs.prepare.outputs.is_release == 'true' }}
@@ -394,9 +397,9 @@ jobs:
           set -euo pipefail
           CLUSTER_TAG="${{ needs.prepare.outputs.cluster_tag }}"
           docker buildx imagetools create \
-            -t "docker.io/${DOCKERHUB_USERNAME}/sealaf:latest" \
-            "docker.io/${DOCKERHUB_USERNAME}/sealaf:${CLUSTER_TAG}-amd64" \
-            "docker.io/${DOCKERHUB_USERNAME}/sealaf:${CLUSTER_TAG}-arm64"
+            -t "docker.io/${DOCKERHUB_USERNAME}/sealaf-cluster:latest" \
+            "docker.io/${DOCKERHUB_USERNAME}/sealaf-cluster:${CLUSTER_TAG}-amd64" \
+            "docker.io/${DOCKERHUB_USERNAME}/sealaf-cluster:${CLUSTER_TAG}-arm64"
 
   sync-image-aliyun:
     name: Sync Sealos Image to OSS (${{ matrix.arch }})
