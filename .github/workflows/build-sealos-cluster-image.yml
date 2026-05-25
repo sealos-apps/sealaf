@@ -1,115 +1,445 @@
 name: build-sealos-cluster-image
 
 on:
-  # Triggered when dockerize-web, dockerize-server, or build-scripts-updated workflow completes on main branch
+  # Triggered when dockerize-web, dockerize-server, build-scripts-updated, or release completes on main branch.
   workflow_run:
     workflows: ["dockerize-web", "dockerize-server", "build-scripts-updated", "release"]
     types: [completed]
     branches: [main]
-  # Manual trigger
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag for cluster image'
+        description: "Cluster image version. Supports latest, sha-*, or v*."
         required: false
-        default: 'latest'
+        type: string
+        default: latest
 
 permissions:
-  packages: write
+  actions: read
   contents: read
+  packages: write
 
 env:
-  GO_VERSION: "1.19"
+  GHCR_SEALOS_IMAGE: ghcr.io/${{ github.repository_owner }}/sealaf
   DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USERNAME }}
 
 concurrency:
-  group: build-sealos-cluster-image-${{ github.ref }}
+  group: build-sealos-cluster-image-${{ github.event.workflow_run.head_sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
-  build_cluster_image:
+  upstream-gate:
+    name: Wait for Upstream Images
     runs-on: ubuntu-latest
-    # Only run if the triggering workflow succeeded (or manual trigger)
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Resolve source commit
+        id: source
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "source_sha=${SOURCE_SHA}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout source commit
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Wait for required upstream workflows
+        if: ${{ github.event_name == 'workflow_run' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          TRIGGERING_WORKFLOW: ${{ github.event.workflow_run.name }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed_files < <(
+            git diff --name-only "${SOURCE_SHA}^1" "${SOURCE_SHA}" 2>/dev/null ||
+            git show --pretty='' --name-only "${SOURCE_SHA}"
+          )
+
+          should_ignore_file() {
+            local path=$1
+            [[ "${path}" == *.md ]]
+          }
+
+          path_matches() {
+            local path=$1
+            local prefix=$2
+            [[ "${path}" == "${prefix}"* ]]
+          }
+
+          web_required=false
+          server_required=false
+          scripts_required=false
+
+          for file in "${changed_files[@]}"; do
+            [[ -n "${file}" ]] || continue
+            if should_ignore_file "${file}"; then
+              continue
+            fi
+
+            if { path_matches "${file}" "web/" && [[ "${file}" != "web/package-lock.json" ]]; } ||
+              [[ "${file}" == ".github/workflows/dockerize-web.yml" ]]; then
+              web_required=true
+            fi
+
+            if { path_matches "${file}" "server/" && [[ "${file}" != "server/package-lock.json" ]]; } ||
+              [[ "${file}" == ".github/workflows/dockerize-server.yml" ]]; then
+              server_required=true
+            fi
+
+            if path_matches "${file}" "build/" ||
+              path_matches "${file}" "deploy/" ||
+              path_matches "${file}" ".github/scripts/" ||
+              [[ "${file}" == ".github/workflows/build-scripts-updated.yml" ]] ||
+              [[ "${file}" == ".github/workflows/build-sealos-cluster-image.yml" ]]; then
+              scripts_required=true
+            fi
+          done
+
+          declare -A workflow_files=(
+            ["dockerize-web"]="dockerize-web.yml"
+            ["dockerize-server"]="dockerize-server.yml"
+            ["build-scripts-updated"]="build-scripts-updated.yml"
+            ["release"]="release.yml"
+          )
+
+          required=()
+          if [[ "${web_required}" == "true" ]]; then
+            required+=("dockerize-web")
+          fi
+          if [[ "${server_required}" == "true" ]]; then
+            required+=("dockerize-server")
+          fi
+          if [[ "${scripts_required}" == "true" ]]; then
+            required+=("build-scripts-updated")
+          fi
+
+          if [[ "${TRIGGERING_WORKFLOW}" == "release" ]]; then
+            required=("release")
+          fi
+
+          if [[ "${#required[@]}" -eq 0 ]]; then
+            required=("${TRIGGERING_WORKFLOW}")
+          fi
+
+          echo "Changed files:"
+          printf '  %s\n' "${changed_files[@]}"
+          echo "Required upstream workflows: ${required[*]}"
+
+          workflow_state() {
+            local workflow_name=$1
+            local workflow_file=${workflow_files[${workflow_name}]}
+            local json
+            json="$(gh api \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs" \
+              -F head_sha="${SOURCE_SHA}" \
+              -F exclude_pull_requests=true \
+              -F per_page=20)"
+
+            printf '%s' "${json}" | jq -r --arg sha "${SOURCE_SHA}" '
+              .workflow_runs
+              | map(select(.head_sha == $sha and .event != "pull_request"))
+              | sort_by(.created_at)
+              | reverse
+              | .[0]
+              | if . == null then "missing\t\t" else [.status, (.conclusion // ""), .html_url] | @tsv end
+            '
+          }
+
+          max_attempts=120
+          sleep_seconds=30
+          for attempt in $(seq 1 "${max_attempts}"); do
+            all_success=true
+
+            for workflow_name in "${required[@]}"; do
+              IFS=$'\t' read -r status conclusion url < <(workflow_state "${workflow_name}")
+              echo "upstream ${workflow_name}: status=${status} conclusion=${conclusion:-pending} ${url}"
+
+              if [[ "${status}" == "completed" && "${conclusion}" == "success" ]]; then
+                continue
+              fi
+
+              if [[ "${status}" == "completed" ]]; then
+                echo "Required upstream workflow ${workflow_name} finished with conclusion=${conclusion}" >&2
+                exit 1
+              fi
+
+              all_success=false
+            done
+
+            if [[ "${all_success}" == "true" ]]; then
+              echo "All required upstream workflows completed successfully for ${SOURCE_SHA}"
+              exit 0
+            fi
+
+            if [[ "${attempt}" -ge "${max_attempts}" ]]; then
+              echo "Timed out waiting for upstream workflows for ${SOURCE_SHA}" >&2
+              exit 1
+            fi
+
+            sleep "${sleep_seconds}"
+          done
+
+  prepare:
+    name: Prepare Variables
+    runs-on: ubuntu-latest
+    needs: [upstream-gate]
+    if: ${{ needs.upstream-gate.result == 'success' }}
+    outputs:
+      source_sha: ${{ steps.vars.outputs.source_sha }}
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+      cluster_tag: ${{ steps.vars.outputs.cluster_tag }}
+      oss_prefix: ${{ steps.vars.outputs.oss_prefix }}
+      is_release: ${{ steps.vars.outputs.is_release }}
+    steps:
+      - name: Prepare build variables
+        id: vars
+        run: |
+          set -euo pipefail
+          RAW_VERSION="${{ github.event.inputs.version || 'latest' }}"
+          VERSION="$(echo "${RAW_VERSION}" | xargs)"
+          SOURCE_SHA="${{ needs.upstream-gate.outputs.source_sha }}"
+          SHORT_SHA="$(echo "${SOURCE_SHA}" | cut -c1-7)"
+
+          if [[ -z "${VERSION}" ]]; then
+            VERSION="latest"
+          fi
+
+          if [[ "${VERSION}" != "latest" && "${VERSION}" != sha-* && "${VERSION}" != v* ]]; then
+            echo "unsupported version input: ${VERSION}. expected latest, sha-*, or v*." >&2
+            exit 1
+          fi
+
+          if [[ "${VERSION}" == "latest" ]]; then
+            IMAGE_TAG="latest"
+            CLUSTER_TAG="latest"
+            OSS_PREFIX="ci/main/${SHORT_SHA}"
+            IS_RELEASE="false"
+          elif [[ "${VERSION}" == sha-* ]]; then
+            INPUT_SHA="${VERSION#sha-}"
+            if [[ -z "${INPUT_SHA}" ]]; then
+              echo "invalid sha version input: ${VERSION}" >&2
+              exit 1
+            fi
+            IMAGE_TAG="${VERSION}"
+            CLUSTER_TAG="main-${INPUT_SHA}"
+            OSS_PREFIX="ci/main/${INPUT_SHA}"
+            IS_RELEASE="false"
+          else
+            IMAGE_TAG="${VERSION#v}"
+            CLUSTER_TAG="${VERSION}"
+            OSS_PREFIX="release/${CLUSTER_TAG}"
+            IS_RELEASE="true"
+          fi
+
+          echo "source_sha=${SOURCE_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "image_tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "cluster_tag=${CLUSTER_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "oss_prefix=${OSS_PREFIX}" >> "${GITHUB_OUTPUT}"
+          echo "is_release=${IS_RELEASE}" >> "${GITHUB_OUTPUT}"
+
+  sealos-build:
+    name: Build Sealos Image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: [prepare]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: Prepare
-        id: prepare
-        run: |
-          IMAGE=sealaf
-          # Use custom version for workflow_dispatch, otherwise 'latest'
-          TAG=${{ github.event.inputs.version || 'latest' }}
-          echo "tag=${TAG}" >> $GITHUB_ENV
-          echo "image=${IMAGE}" >> $GITHUB_ENV
-          echo "Building cluster image: ${IMAGE}:${TAG}"
-
-      - name: Remove builtin docker
-        run: |
-          sudo apt-get remove -y moby-engine moby-cli moby-buildx moby-compose
+          ref: ${{ needs.prepare.outputs.source_sha }}
 
       - name: Install sealos
-        run: |
-          echo "deb [trusted=yes] https://apt.fury.io/labring/ /" | sudo tee /etc/apt/sources.list.d/labring.list
-          sudo apt update
-          sudo apt install sealos=4.1.4
-          sudo sealos version
+        run: sudo bash ./.github/scripts/install-sealos.sh
 
-      - name: Install buildah
-        run: |
-          sudo apt remove buildah -y || true
-          arch=$(arch | sed s/aarch64/arm64/ | sed s/x86_64/amd64/)
-          echo "Downloading buildah from https://github.com/labring/cluster-image/releases/download/depend/buildah.linux.${arch}"
-          sudo wget -qO "buildah" "https://github.com/labring/cluster-image/releases/download/depend/buildah.linux.${arch}"
-          sudo chmod a+x buildah
-          sudo mv buildah /usr/bin
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login GHCR.io
-        run: |
-          echo "Logging in to ghcr.io as ${{ github.repository_owner }}"
-          sudo buildah login -u ${{ github.repository_owner }} -p ${{ secrets.GITHUB_TOKEN }} ghcr.io
+      - name: Login to DockerHub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build cluster image
-        env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ env.image }}
-          VERSION: ${{ env.tag }}
+      - name: Cache images for sealos
         working-directory: deploy
         run: |
-          echo "Building cluster image: $IMAGE:$VERSION"
-          sudo sealos build -t $IMAGE:$VERSION-arm64 --platform linux/arm64 -f Kubefile  .
-          sudo rm -rf registry
-          sudo sealos build -t $IMAGE:$VERSION-amd64 --platform linux/amd64 -f Kubefile  .
-          sudo sealos images
+          set -euo pipefail
+          sudo sealos login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" ghcr.io
+          sed -i -E "/repository: \"ghcr.io\/${{ github.repository_owner }}\/sealaf-web\"/ { n; s/tag: \".*\"/tag: \"${{ needs.prepare.outputs.image_tag }}\"/; }" charts/sealaf/values.yaml
+          sed -i -E "/repository: \"ghcr.io\/${{ github.repository_owner }}\/sealaf-server\"/ { n; s/tag: \".*\"/tag: \"${{ needs.prepare.outputs.image_tag }}\"/; }" charts/sealaf/values.yaml
+          sudo sealos registry save --registry-dir=registry --arch ${{ matrix.arch }} .
 
-      - name: Push cluster image to ghcr.io
-        env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ env.image }}
-          VERSION: ${{ env.tag }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push sealos image (arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./deploy
+          file: ./deploy/Kubefile
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: ${{ matrix.platform }}
+          tags: |
+            ${{ env.GHCR_SEALOS_IMAGE }}:${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}
+            ${{ env.DOCKERHUB_USERNAME != '' && format('docker.io/{0}/sealaf:{1}-{2}', env.DOCKERHUB_USERNAME, needs.prepare.outputs.cluster_tag, matrix.arch) || '' }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.source_sha }}
+            runnumber=${{ github.run_id }}
+
+      - name: Save sealos image package
         run: |
-          sudo buildah images
-          sudo buildah push $IMAGE:$VERSION-amd64
-          sudo buildah push $IMAGE:$VERSION-arm64
-          sudo buildah manifest create $IMAGE:$VERSION
-          sudo buildah manifest add $IMAGE:$VERSION docker://$IMAGE:$VERSION-amd64
-          sudo buildah manifest add $IMAGE:$VERSION docker://$IMAGE:$VERSION-arm64
-          sudo buildah manifest push --all $IMAGE:$VERSION docker://$IMAGE:$VERSION
+          set -euo pipefail
+          CLUSTER_TAG="${{ needs.prepare.outputs.cluster_tag }}"
+          docker pull "${GHCR_SEALOS_IMAGE}:${CLUSTER_TAG}-${{ matrix.arch }}"
+          mkdir -p release-assets
+          docker save "${GHCR_SEALOS_IMAGE}:${CLUSTER_TAG}-${{ matrix.arch }}" | gzip > "release-assets/sealaf-cluster-${CLUSTER_TAG}-${{ matrix.arch }}.tar.gz"
+          ls -lh release-assets
+          du -h "release-assets/sealaf-cluster-${CLUSTER_TAG}-${{ matrix.arch }}.tar.gz"
 
-      - name: Push cluster image to docker.io
+      - name: Upload sealos image package
+        uses: actions/upload-artifact@v4
+        with:
+          name: sealos-image-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}
+          path: release-assets/sealaf-cluster-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  sealos-manifest:
+    name: Publish Sealos Manifest
+    runs-on: ubuntu-latest
+    needs: [prepare, sealos-build]
+    permissions:
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to DockerHub
         if: ${{ env.DOCKERHUB_USERNAME != '' }}
-        env:
-          GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/${{ env.image }}
-          IMAGE: docker.io/${{ env.DOCKERHUB_USERNAME }}/${{ env.image }}
-          VERSION: ${{ env.tag }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Create multi-arch manifest
         run: |
-          sudo buildah login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }} docker.io
-          sudo buildah tag $GHCR_IMAGE:$VERSION-amd64 $IMAGE:$VERSION-amd64
-          sudo buildah tag $GHCR_IMAGE:$VERSION-arm64 $IMAGE:$VERSION-arm64
-          sudo buildah push $IMAGE:$VERSION-amd64
-          sudo buildah push $IMAGE:$VERSION-arm64
-          sudo buildah manifest create $IMAGE:$VERSION
-          sudo buildah manifest add $IMAGE:$VERSION docker://$IMAGE:$VERSION-amd64
-          sudo buildah manifest add $IMAGE:$VERSION docker://$IMAGE:$VERSION-arm64
-          sudo buildah manifest push --all $IMAGE:$VERSION docker://$IMAGE:$VERSION
+          set -euo pipefail
+          CLUSTER_TAG="${{ needs.prepare.outputs.cluster_tag }}"
+          docker buildx imagetools create \
+            -t "${GHCR_SEALOS_IMAGE}:${CLUSTER_TAG}" \
+            "${GHCR_SEALOS_IMAGE}:${CLUSTER_TAG}-amd64" \
+            "${GHCR_SEALOS_IMAGE}:${CLUSTER_TAG}-arm64"
+          docker buildx imagetools inspect "${GHCR_SEALOS_IMAGE}:${CLUSTER_TAG}"
+
+      - name: Create DockerHub multi-arch manifest
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        run: |
+          set -euo pipefail
+          CLUSTER_TAG="${{ needs.prepare.outputs.cluster_tag }}"
+          docker buildx imagetools create \
+            -t "docker.io/${DOCKERHUB_USERNAME}/sealaf:${CLUSTER_TAG}" \
+            "docker.io/${DOCKERHUB_USERNAME}/sealaf:${CLUSTER_TAG}-amd64" \
+            "docker.io/${DOCKERHUB_USERNAME}/sealaf:${CLUSTER_TAG}-arm64"
+
+      - name: Update latest tag
+        if: ${{ needs.prepare.outputs.is_release == 'true' }}
+        run: |
+          set -euo pipefail
+          CLUSTER_TAG="${{ needs.prepare.outputs.cluster_tag }}"
+          docker buildx imagetools create \
+            -t "${GHCR_SEALOS_IMAGE}:latest" \
+            "${GHCR_SEALOS_IMAGE}:${CLUSTER_TAG}-amd64" \
+            "${GHCR_SEALOS_IMAGE}:${CLUSTER_TAG}-arm64"
+
+      - name: Update DockerHub latest tag
+        if: ${{ needs.prepare.outputs.is_release == 'true' && env.DOCKERHUB_USERNAME != '' }}
+        run: |
+          set -euo pipefail
+          CLUSTER_TAG="${{ needs.prepare.outputs.cluster_tag }}"
+          docker buildx imagetools create \
+            -t "docker.io/${DOCKERHUB_USERNAME}/sealaf:latest" \
+            "docker.io/${DOCKERHUB_USERNAME}/sealaf:${CLUSTER_TAG}-amd64" \
+            "docker.io/${DOCKERHUB_USERNAME}/sealaf:${CLUSTER_TAG}-arm64"
+
+  sync-image-aliyun:
+    name: Sync Sealos Image to OSS (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    needs: [prepare, sealos-manifest]
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Download sealos package
+        uses: actions/download-artifact@v5
+        with:
+          path: release-assets
+          pattern: sealos-image-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}
+          merge-multiple: true
+
+      - name: Install oss tools
+        run: |
+          set -euo pipefail
+          sudo -v
+          curl https://gosspublic.alicdn.com/ossutil/install.sh | sudo bash
+
+      - name: Sync to OSS
+        run: |
+          set -euo pipefail
+          TAR_NAME="release-assets/sealaf-cluster-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}.tar.gz"
+          md5sum "${TAR_NAME}" > "${TAR_NAME}.md5"
+          cat "${TAR_NAME}.md5"
+          ls -lh release-assets
+
+          OSS_PREFIX="${{ needs.prepare.outputs.oss_prefix }}"
+          OSS_TAR_NAME="sealaf-cluster-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}.tar"
+
+          ossutil64 cp -f -e "${{ secrets.OSS_ENDPOINT }}" \
+            -i "${{ secrets.OSS_ACCESS_KEY_ID }}" \
+            -k "${{ secrets.OSS_ACCESS_KEY_SECRET }}" \
+            "${TAR_NAME}" \
+            "oss://${{ vars.OSS_BUCKET }}/${OSS_PREFIX}/${OSS_TAR_NAME}"
+          ossutil64 cp -f -e "${{ secrets.OSS_ENDPOINT }}" \
+            -i "${{ secrets.OSS_ACCESS_KEY_ID }}" \
+            -k "${{ secrets.OSS_ACCESS_KEY_SECRET }}" \
+            "${TAR_NAME}.md5" \
+            "oss://${{ vars.OSS_BUCKET }}/${OSS_PREFIX}/${OSS_TAR_NAME}.md5"

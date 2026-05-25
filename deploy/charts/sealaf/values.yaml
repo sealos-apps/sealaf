@@ -80,7 +80,7 @@ web:
   name: "sealaf-web"
   replicaCount: 1
   image:
-    repository: "docker.io/zacharywin/sealaf-web"
+    repository: "ghcr.io/sealos-apps/sealaf-web"
     tag: "latest"
     pullPolicy: IfNotPresent
   service:
@@ -122,7 +122,7 @@ server:
   name: "sealaf-server"
   replicaCount: 1
   image:
-    repository: "docker.io/zacharywin/sealaf-server"
+    repository: "ghcr.io/sealos-apps/sealaf-server"
     tag: "latest"
     pullPolicy: IfNotPresent
   service:
