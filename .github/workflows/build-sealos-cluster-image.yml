@@ -140,7 +140,7 @@ jobs:
             local workflow_name=$1
             local workflow_file=${workflow_files[${workflow_name}]}
             local json
-            json="$(gh api \
+            json="$(gh api --method GET \
               "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs" \
               -F head_sha="${SOURCE_SHA}" \
               -F exclude_pull_requests=true \
