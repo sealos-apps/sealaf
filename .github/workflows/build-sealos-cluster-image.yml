@@ -315,11 +315,7 @@ jobs:
           tags: |
             ${{ env.GHCR_SEALOS_IMAGE }}:${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}
             ${{ env.DOCKERHUB_USERNAME != '' && format('docker.io/{0}/sealaf-cluster:{1}-{2}', env.DOCKERHUB_USERNAME, needs.prepare.outputs.cluster_tag, matrix.arch) || '' }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ needs.prepare.outputs.source_sha }}
-            org.opencontainers.image.description=Sealaf cluster image
-            runnumber=${{ github.run_id }}
+          labels: runnumber=${{ github.run_id }}
 
       - name: Save sealos image package
         run: |
@@ -432,19 +428,19 @@ jobs:
           set -euo pipefail
           TAR_NAME="release-assets/sealaf-cluster-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}.tar.gz"
           md5sum "${TAR_NAME}" > "${TAR_NAME}.md5"
-          cat "${TAR_NAME}.md5"
-          ls -lh release-assets
 
           OSS_PREFIX="${{ needs.prepare.outputs.oss_prefix }}"
           OSS_TAR_NAME="sealaf-cluster-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}.tar"
 
-          ossutil64 cp -f -e "${{ secrets.OSS_ENDPOINT }}" \
-            -i "${{ secrets.OSS_ACCESS_KEY_ID }}" \
-            -k "${{ secrets.OSS_ACCESS_KEY_SECRET }}" \
-            "${TAR_NAME}" \
-            "oss://${{ vars.OSS_BUCKET }}/${OSS_PREFIX}/${OSS_TAR_NAME}"
-          ossutil64 cp -f -e "${{ secrets.OSS_ENDPOINT }}" \
-            -i "${{ secrets.OSS_ACCESS_KEY_ID }}" \
-            -k "${{ secrets.OSS_ACCESS_KEY_SECRET }}" \
-            "${TAR_NAME}.md5" \
-            "oss://${{ vars.OSS_BUCKET }}/${OSS_PREFIX}/${OSS_TAR_NAME}.md5"
+          if [[ -f "${TAR_NAME}" ]]; then
+            ossutil64 cp -f -e ${{ secrets.OSS_ENDPOINT }} \
+              -i ${{ secrets.OSS_ACCESS_KEY_ID }} \
+              -k ${{ secrets.OSS_ACCESS_KEY_SECRET }} \
+              "${TAR_NAME}" \
+              "oss://${{ vars.OSS_BUCKET }}/${OSS_PREFIX}/${OSS_TAR_NAME}"
+            ossutil64 cp -f -e ${{ secrets.OSS_ENDPOINT }} \
+              -i ${{ secrets.OSS_ACCESS_KEY_ID }} \
+              -k ${{ secrets.OSS_ACCESS_KEY_SECRET }} \
+              "${TAR_NAME}.md5" \
+              "oss://${{ vars.OSS_BUCKET }}/${OSS_PREFIX}/${OSS_TAR_NAME}.md5"
+          fi
