@@ -163,6 +163,11 @@ server:
     successThreshold: 1
     failureThreshold: 3
 
+kubeblocks:
+  # KubeBlocks manifest template version. install.sh resolves auto-detection
+  # before passing this value to Helm, so chart rendering only receives kb8/kb9.
+  templateVersion: "kb8"
+
 mongodb:
   enabled: true
   # Set this to use an external MongoDB and skip the KubeBlocks Cluster.

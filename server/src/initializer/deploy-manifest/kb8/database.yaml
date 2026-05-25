@@ -1,0 +1,42 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  name: <%- name %>
+  labels:
+    app.kubernetes.io/name: <%- name %>
+    helm.sh/chart: sealaf-0.1.0
+    app.kubernetes.io/instance: <%- name %>
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    kb.io/database: mongodb-8.0.4
+  finalizers:
+    - cluster.kubeblocks.io/finalizer
+spec:
+  affinity:
+    podAntiAffinity: Preferred
+    tenancy: SharedNode
+    topologyKeys:
+      - kubernetes.io/hostname
+  componentSpecs:
+    - name: mongodb
+      componentDef: mongodb
+      monitor: true
+      replicas: <%- replicas %>
+      resources:
+        limits:
+          cpu: <%- limitCPU %>m
+          memory: <%- limitMemory %>Mi
+        requests:
+          cpu: <%- requestCPU %>m
+          memory: <%- requestMemory %>Mi
+      serviceAccountName: <%- name %>
+      serviceVersion: 8.0.4
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: <%- capacity %>Gi
+  terminationPolicy: Delete

@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common'
 import { ServerConfig } from '../constants'
 import { SystemDatabase } from 'src/system-database'
-import { Region } from 'src/region/entities/region'
+import {
+  DeployManifest,
+  DeployManifestTemplates,
+  Region,
+} from 'src/region/entities/region'
 import { Runtime } from 'src/application/entities/runtime'
 import {
   ResourceOption,
@@ -27,6 +31,38 @@ export class InitializerService {
   private readonly logger = new Logger(InitializerService.name)
   private readonly db = SystemDatabase.db
 
+  private readDeployManifestTemplates(
+    basePath: string,
+    dir: string,
+  ): DeployManifestTemplates {
+    const dirPath = path.resolve(basePath, dir)
+    const files = readdirSync(dirPath)
+
+    return files.reduce((prev, file) => {
+      const key = file.slice(0, -path.extname(file).length)
+      const value = readFileSync(path.resolve(dirPath, file), 'utf8')
+      prev[key] = value
+      return prev
+    }, {})
+  }
+
+  private readDeployManifest(): DeployManifest {
+    const basePath = path.resolve(__dirname, './deploy-manifest')
+    const defaultVersion = ServerConfig.KUBEBLOCKS_TEMPLATE_VERSION
+    const common = this.readDeployManifestTemplates(basePath, 'common')
+    const versions = {
+      kb8: this.readDeployManifestTemplates(basePath, 'kb8'),
+      kb9: this.readDeployManifestTemplates(basePath, 'kb9'),
+    }
+
+    return {
+      ...common,
+      database: versions[defaultVersion]?.database,
+      defaultVersion,
+      versions,
+    }
+  }
+
   async init() {
     await this.createDatabaseIndexes()
     await this.createDefaultRegion()
@@ -44,16 +80,7 @@ export class InitializerService {
       return
     }
 
-    const files = readdirSync(path.resolve(__dirname, './deploy-manifest'))
-    const manifest = files.reduce((prev, file) => {
-      const key = file.slice(0, -path.extname(file).length)
-      const value = readFileSync(
-        path.resolve(__dirname, './deploy-manifest', file),
-        'utf8',
-      )
-      prev[key] = value
-      return prev
-    }, {})
+    const manifest = this.readDeployManifest()
 
     const res = await this.db.collection<Region>('Region').insertOne({
       name: 'default',

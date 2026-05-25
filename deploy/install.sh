@@ -246,6 +246,58 @@ detect_mongodb_api_mode() {
   fi
 }
 
+detect_kubeblocks_template_version() {
+  local version major
+
+  version="$(kubectl get deployment kubeblocks -n kb-system -o jsonpath='{.metadata.labels.app\.kubernetes\.io/version}{" "}{.spec.template.spec.containers[*].image}' 2>/dev/null || true)"
+  if [ -z "${version}" ]; then
+    version="$(
+      kubectl get deployments -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{" "}{.metadata.labels.app\.kubernetes\.io/version}{" "}{.spec.template.spec.containers[*].image}{"\n"}{end}' 2>/dev/null |
+        awk '/kubeblocks/ { print; exit }' || true
+    )"
+  fi
+
+  if [[ "${version}" =~ (^|[^0-9])(0\.)?9\.([0-9]+) ]]; then
+    printf '%s' "kb9"
+    return
+  fi
+
+  if [[ "${version}" =~ (^|[^0-9])(0\.)?8\.([0-9]+) ]]; then
+    printf '%s' "kb8"
+    return
+  fi
+
+  if [[ "${version}" =~ (^|[^0-9])([1-9][0-9]*)\. ]]; then
+    major="${BASH_REMATCH[2]}"
+    if [ "${major}" -lt 8 ]; then
+      warn "Detected KubeBlocks version ${version}, using kb8 manifest templates" >&2
+      printf '%s' "kb8"
+      return
+    fi
+
+    printf '%s' "kb9"
+    return
+  fi
+
+  warn "Unable to detect KubeBlocks version, using kb8 manifest templates" >&2
+  printf '%s' "kb8"
+}
+
+resolve_kubeblocks_template_version() {
+  case "${KUBEBLOCKS_TEMPLATE_VERSION}" in
+    kb8|kb9)
+      printf '%s' "${KUBEBLOCKS_TEMPLATE_VERSION}"
+      ;;
+    auto)
+      detect_kubeblocks_template_version
+      ;;
+    *)
+      echo -e "\033[31m ERROR [$(timestamp)] >> Unsupported KUBEBLOCKS_TEMPLATE_VERSION=${KUBEBLOCKS_TEMPLATE_VERSION}. Expected auto, kb8, or kb9. \033[0m" >&2
+      exit 1
+      ;;
+  esac
+}
+
 mongodb_replica_set() {
   printf '%s-%s' "${MONGODB_CLUSTER_NAME}" "${MONGODB_COMPONENT_NAME}"
 }
@@ -329,10 +381,11 @@ apply_mongodb_cluster() {
     values_args=(-f "${VALUES_FILE}")
   fi
 
-  info "Applying MongoDB Cluster ${MONGODB_CLUSTER_NAME} with apiMode=${RESOLVED_MONGODB_API_MODE}"
+  info "Applying MongoDB Cluster ${MONGODB_CLUSTER_NAME} with apiMode=${RESOLVED_MONGODB_API_MODE}, templateVersion=${RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION}"
   helm template "${RELEASE_NAME}" "${CHART_DIR}" -n "${NAMESPACE}" \
     "${values_args[@]}" \
     --show-only templates/mongodb.yaml \
+    --set-string "kubeblocks.templateVersion=${RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION}" \
     --set-string "mongodb.apiMode=${RESOLVED_MONGODB_API_MODE}" \
     --set-string "mongodb.clusterName=${MONGODB_CLUSTER_NAME}" \
     --set-string "mongodb.clusterDefinitionRef=${MONGODB_CLUSTER_DEFINITION_REF}" \
@@ -407,6 +460,7 @@ MONGODB_SERVICE_VERSION="${MONGODB_SERVICE_VERSION:-${mongodbServiceVersion:-8.0
 MONGODB_CLUSTER_DEFINITION_REF="${MONGODB_CLUSTER_DEFINITION_REF:-${mongodbClusterDefinitionRef:-mongodb}}"
 MONGODB_CLUSTER_VERSION_REF="${MONGODB_CLUSTER_VERSION_REF:-${mongodbClusterVersionRef:-mongodb-5.0}}"
 MONGODB_API_MODE="${MONGODB_API_MODE:-${mongodbApiMode:-auto}}"
+KUBEBLOCKS_TEMPLATE_VERSION="${KUBEBLOCKS_TEMPLATE_VERSION:-${kubeblocksTemplateVersion:-auto}}"
 MONGODB_CONN_CREDENTIAL_SECRET="${MONGODB_CONN_CREDENTIAL_SECRET:-${mongodbConnCredentialSecret:-${MONGODB_CLUSTER_NAME}-conn-credential}}"
 MONGODB_ACCOUNT_ROOT_SECRET="${MONGODB_ACCOUNT_ROOT_SECRET:-${mongodbAccountRootSecret:-${MONGODB_CLUSTER_NAME}-account-root}}"
 MONGODB_SECRET_WAIT_TIMEOUT="${MONGODB_SECRET_WAIT_TIMEOUT:-${mongodbSecretWaitTimeout:-600}}"
@@ -414,6 +468,7 @@ MONGODB_SECRET_TYPE="${MONGODB_SECRET_TYPE:-}"
 mongodb_uri_source="${mongodb_uri_source:-}"
 RESOLVED_MONGODB_URI="${RESOLVED_MONGODB_URI:-}"
 RESOLVED_MONGODB_API_MODE="$(detect_mongodb_api_mode)"
+RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION="$(resolve_kubeblocks_template_version)"
 
 if [ -z "${CLOUD_DOMAIN}" ]; then
   CLOUD_DOMAIN="$(get_sealos_config cloudDomain)"
@@ -451,7 +506,7 @@ fi
 
 info "Secret reuse summary: server_jwt_source=${server_jwt_source}, strict_reuse=${STRICT_SECRET_REUSE}"
 ensure_mongodb_uri
-info "MongoDB credential summary: source=${mongodb_uri_source}, secret_type=${MONGODB_SECRET_TYPE:-provided}, apiMode=${RESOLVED_MONGODB_API_MODE}"
+info "MongoDB credential summary: source=${mongodb_uri_source}, secret_type=${MONGODB_SECRET_TYPE:-provided}, apiMode=${RESOLVED_MONGODB_API_MODE}, templateVersion=${RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION}"
 adopt_existing_resources
 
 helm_set_args=(
@@ -463,6 +518,7 @@ helm_set_args=(
   --set-string "databaseMonitorUrl=${DATABASE_MONITOR_URL}"
   --set-string "runtimeInitImage=${RUNTIME_INIT_IMAGE}"
   --set-string "runtimeImage=${RUNTIME_IMAGE}"
+  --set-string "kubeblocks.templateVersion=${RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION}"
   --set-string "mongodb.apiMode=${RESOLVED_MONGODB_API_MODE}"
   --set-string "mongodb.clusterName=${MONGODB_CLUSTER_NAME}"
   --set-string "mongodb.clusterDefinitionRef=${MONGODB_CLUSTER_DEFINITION_REF}"

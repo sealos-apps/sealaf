@@ -65,8 +65,24 @@ export type PrometheusConf = {
   apiUrl: string
 }
 
-export type DeployManifest = {
-  [key: string]: string
+export type DeployManifestTemplateKey =
+  | 'database'
+  | 'databaseOpsRequestStart'
+  | 'databaseOpsRequestStop'
+  | 'databaseOpsRequestRestart'
+  | 'databaseOpsRequestVerticalScaling'
+  | 'databaseOpsRequestHorizontalScaling'
+  | 'databaseOpsRequestVolumeExpansion'
+
+export type DeployManifestVersion = 'kb8' | 'kb9'
+
+export type DeployManifestTemplates = Partial<
+  Record<DeployManifestTemplateKey, string>
+>
+
+export type DeployManifest = DeployManifestTemplates & {
+  defaultVersion?: DeployManifestVersion
+  versions?: Partial<Record<DeployManifestVersion, DeployManifestTemplates>>
 }
 
 export class Region {

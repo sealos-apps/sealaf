@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common'
-import { Region } from 'src/region/entities/region'
+import { DeployManifestTemplateKey, Region } from 'src/region/entities/region'
 import {
   DedicatedDatabase,
   DedicatedDatabasePhase,
@@ -45,6 +45,42 @@ export class DedicatedDatabaseService {
     private readonly cluster: ClusterService,
     private readonly mongoService: MongoService,
   ) {}
+
+  private getDeployManifestTemplate(
+    region: Region,
+    key: DeployManifestTemplateKey,
+  ): string {
+    const deployManifest = region.deployManifest || {}
+
+    if (deployManifest.defaultVersion) {
+      const version = deployManifest.defaultVersion
+      const template = deployManifest.versions?.[version]?.[key]
+
+      if (template) {
+        return template
+      }
+
+      if (key !== 'database') {
+        const commonTemplate = deployManifest[key]
+        if (!commonTemplate) {
+          throw new Error(`Common deploy manifest template ${key} not found`)
+        }
+        return commonTemplate
+      }
+
+      throw new Error(
+        `Deploy manifest template ${key} not found for version ${version}`,
+      )
+    }
+
+    const template = deployManifest[key]
+
+    if (!template) {
+      throw new Error(`Legacy deploy manifest template ${key} not found`)
+    }
+
+    return template
+  }
 
   async create(appid: string, session?: ClientSession) {
     const db = SystemDatabase.db
@@ -307,7 +343,7 @@ export class DedicatedDatabaseService {
       limitMemory * (region.bundleConf?.memoryRequestLimitRatio || 0.5)
 
     const label = appid
-    const template = region.deployManifest.database
+    const template = this.getDeployManifestTemplate(region, 'database')
     const tmpl = _.template(template)
     // Capacity: Convert to Gi format, e.g., "10Gi"
     const manifest = tmpl({
@@ -509,15 +545,24 @@ export class DedicatedDatabaseService {
     let name: string
     switch (type) {
       case 'restart':
-        template = region.deployManifest.databaseOpsRequestRestart
+        template = this.getDeployManifestTemplate(
+          region,
+          'databaseOpsRequestRestart',
+        )
         name = `${clusterName}-restart`
         break
       case 'stop':
-        template = region.deployManifest.databaseOpsRequestStop
+        template = this.getDeployManifestTemplate(
+          region,
+          'databaseOpsRequestStop',
+        )
         name = `${clusterName}-stop`
         break
       case 'start':
-        template = region.deployManifest.databaseOpsRequestStart
+        template = this.getDeployManifestTemplate(
+          region,
+          'databaseOpsRequestStart',
+        )
         name = `${clusterName}-start`
         break
       default:
@@ -551,15 +596,24 @@ export class DedicatedDatabaseService {
     let name: string
     switch (type) {
       case 'verticalScaling':
-        template = region.deployManifest.databaseOpsRequestVerticalScaling
+        template = this.getDeployManifestTemplate(
+          region,
+          'databaseOpsRequestVerticalScaling',
+        )
         name = `${clusterName}-vertical-scaling`
         break
       case 'horizontalScaling':
-        template = region.deployManifest.databaseOpsRequestHorizontalScaling
+        template = this.getDeployManifestTemplate(
+          region,
+          'databaseOpsRequestHorizontalScaling',
+        )
         name = `${clusterName}-horizontal-scaling`
         break
       case 'volumeExpansion':
-        template = region.deployManifest.databaseOpsRequestVolumeExpansion
+        template = this.getDeployManifestTemplate(
+          region,
+          'databaseOpsRequestVolumeExpansion',
+        )
         name = `${clusterName}-volume-expansion`
         break
       default:

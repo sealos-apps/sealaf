@@ -260,12 +260,15 @@ mongodb://<username>:<password>@<endpoint>/<database>?authSource=admin&replicaSe
 | `MONGODB_DATABASE` | `sys_db` | 应用数据库名。兼容旧变量 `mongodbDatabase`。 |
 | `MONGODB_PORT` | `27017` | MongoDB 端口。兼容旧变量 `mongodbPort`。 |
 | `MONGODB_API_MODE` | `auto` | KubeBlocks Cluster API 模式：`auto`、`serviceVersion`、`clusterVersionRef`。兼容旧变量 `mongodbApiMode`。 |
+| `KUBEBLOCKS_TEMPLATE_VERSION` | `auto` | KubeBlocks manifest 模板版本：`auto`、`kb8`、`kb9`。兼容旧变量 `kubeblocksTemplateVersion`。脚本会解析成 `kubeblocks.templateVersion` 传给 Helm 和 server。 |
 | `MONGODB_SERVICE_VERSION` | `8.0.4` | `serviceVersion` 模式使用的 MongoDB service version。兼容旧变量 `mongodbServiceVersion`。 |
 | `MONGODB_CLUSTER_DEFINITION_REF` | `mongodb` | `clusterVersionRef` 模式使用的 ClusterDefinition。兼容旧变量 `mongodbClusterDefinitionRef`。 |
 | `MONGODB_CLUSTER_VERSION_REF` | `mongodb-5.0` | `clusterVersionRef` 模式使用的 ClusterVersion。兼容旧变量 `mongodbClusterVersionRef`。 |
 | `MONGODB_CONN_CREDENTIAL_SECRET` | `${MONGODB_CLUSTER_NAME}-conn-credential` | conn credential Secret 名。兼容旧变量 `mongodbConnCredentialSecret`。 |
 | `MONGODB_ACCOUNT_ROOT_SECRET` | `${MONGODB_CLUSTER_NAME}-account-root` | account root Secret 名。兼容旧变量 `mongodbAccountRootSecret`。 |
 | `MONGODB_SECRET_WAIT_TIMEOUT` | `600` | 等待 MongoDB 凭据 Secret 的超时时间，单位秒。兼容旧变量 `mongodbSecretWaitTimeout`。 |
+
+升级旧系统时，server 不会自动迁移已有 `Region.deployManifest`。如果老数据没有 `defaultVersion` 和 `versions`，专属数据库仍使用旧的顶层 `deployManifest.database` 模板；只有手动补充 `defaultVersion` 和 `versions` 后，才会按 KB8/KB9 多版本模板选择。
 
 ### 内部和调试变量
 
@@ -276,6 +279,7 @@ mongodb://<username>:<password>@<endpoint>/<database>?authSource=admin&replicaSe
 | `MONGODB_SECRET_TYPE` | 当前识别到的 MongoDB Secret 类型。 |
 | `RESOLVED_MONGODB_URI` | 脚本内部生成的 MongoDB URI。 |
 | `RESOLVED_MONGODB_API_MODE` | 自动探测后的 KubeBlocks API 模式。 |
+| `RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION` | 自动探测后的 KubeBlocks manifest 模板版本，只在脚本内部使用。 |
 | `mongodb_uri_source` | MongoDB URI 来源描述。 |
 
 ## 常用命令速查
@@ -314,6 +318,13 @@ sealos run <sealaf-image> \
 ```bash
 sealos run <sealaf-image> \
   -e MONGODB_API_MODE=serviceVersion
+```
+
+强制使用 KB9 manifest 模板：
+
+```bash
+sealos run <sealaf-image> \
+  -e KUBEBLOCKS_TEMPLATE_VERSION=kb9
 ```
 
 查看 Helm 状态：

@@ -9,7 +9,7 @@
         "watchAssets": true
       },
       {
-        "include": "initializer/deploy-manifest/*",
+        "include": "initializer/deploy-manifest/**/*",
         "watchAssets": true
       }
     ]

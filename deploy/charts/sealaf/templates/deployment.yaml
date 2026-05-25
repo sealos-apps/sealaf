@@ -174,6 +174,8 @@ spec:
               value: {{ .Values.runtimeInitImage | quote }}
             - name: DEFAULT_RUNTIME_IMAGE
               value: {{ .Values.runtimeImage | quote }}
+            - name: KUBEBLOCKS_TEMPLATE_VERSION
+              value: {{ .Values.kubeblocks.templateVersion | quote }}
             {{- with .Values.server.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

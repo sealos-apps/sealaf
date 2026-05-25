@@ -106,6 +106,10 @@ export class ServerConfig {
   static get KUBEBLOCK_V5_UPGRADE_URL() {
     return process.env.KUBEBLOCK_V5_UPGRADE_URL
   }
+
+  static get KUBEBLOCKS_TEMPLATE_VERSION(): 'kb8' | 'kb9' {
+    return process.env.KUBEBLOCKS_TEMPLATE_VERSION === 'kb9' ? 'kb9' : 'kb8'
+  }
 }
 
 export const LABEL_KEY_APP_ID = 'sealaf.dev/appid'
