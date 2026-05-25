@@ -316,7 +316,9 @@ jobs:
             ${{ env.GHCR_SEALOS_IMAGE }}:${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}
             ${{ env.DOCKERHUB_USERNAME != '' && format('docker.io/{0}/sealaf-cluster:{1}-{2}', env.DOCKERHUB_USERNAME, needs.prepare.outputs.cluster_tag, matrix.arch) || '' }}
           labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.prepare.outputs.source_sha }}
+            org.opencontainers.image.description=Sealaf cluster image
             runnumber=${{ github.run_id }}
 
       - name: Save sealos image package
