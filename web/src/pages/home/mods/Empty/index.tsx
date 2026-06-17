@@ -57,6 +57,7 @@ function Empty() {
           <Button
             size={"lg"}
             colorScheme="primary"
+            className="!bg-primary-600 !text-lafWhite-200 hover:!bg-primary-700"
             style={{ padding: "0 80px" }}
             leftIcon={<AddIcon />}
           >
