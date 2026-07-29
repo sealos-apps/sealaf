@@ -170,6 +170,9 @@ kubeblocks:
 
 mongodb:
   enabled: true
+  # Render and manage the internal KubeBlocks Cluster even when externalUri is set.
+  # deploy/install.sh enables this for the bundled MongoDB so Helm uninstall removes it.
+  manageCluster: false
   # Set this to use an external MongoDB and skip the KubeBlocks Cluster.
   externalUri: ""
   # serviceVersion: newer KubeBlocks Cluster API.
