@@ -1,4 +1,4 @@
-{{- if and .Values.mongodb.enabled (not .Values.mongodb.externalUri) }}
+{{- if and .Values.mongodb.enabled (or .Values.mongodb.manageCluster (not .Values.mongodb.externalUri)) }}
 {{- $templateVersion := default "kb8" .Values.kubeblocks.templateVersion }}
 {{- if eq $templateVersion "kb9" }}
 {{ include "sealaf.mongodb.kb9" . }}

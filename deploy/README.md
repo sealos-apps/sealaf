@@ -136,12 +136,15 @@ sealaf-system/deployment/sealaf-web
 sealaf-system/deployment/sealaf-server
 sealaf-system/ingress/sealaf-web
 sealaf-system/ingress/sealaf-server
+sealaf-system/cluster.apps.kubeblocks.io/sealaf-mongodb
 app-system/app/sealaf
 clusterrole/sealaf-role
 clusterrolebinding/sealaf-rolebinding
 ```
 
-默认不接管 `sealaf-mongodb` Cluster。原因是脚本会把数据库连接串作为 `mongodb.externalUri` 传给 Helm，MongoDB Cluster 保持在 Helm release 外部，避免升级或卸载应用时误改或误删数据库。
+默认内置 MongoDB 会被接管进 Helm release。升级时脚本仍会复用旧 MongoDB 凭据和 PVC，不会重建数据库；但卸载时 Helm release 能删除 `sealaf-mongodb` Cluster。
+
+显式传入 `MONGODB_URI` 时视为外部数据库，脚本不会创建或接管内置 `sealaf-mongodb` Cluster。
 
 如果资源已经属于另一个 Helm release，脚本默认拒绝抢占。确认要覆盖旧 owner 时才使用：
 
@@ -171,6 +174,13 @@ helm history sealaf -n sealaf-system
 sealos run <new-sealaf-image>
 ```
 
+升级语义是保留数据库升级应用：
+
+- 复用 `sealaf-config.SERVER_JWT_SECRET`。
+- 复用 `sealaf-mongodb-conn-credential` 或外部 `MONGODB_URI`。
+- 默认把内置 `sealaf-mongodb` Cluster 纳入 Helm release，但不删除 PVC、不清空系统库。
+- 升级 web/server、Ingress、Secret、RBAC、App 和内置 MongoDB manifest。
+
 也可以直接用 Helm 更新，但需要确保当前 release 已经完成首次脚本安装，并且 release values 中已有脚本写入的配置：
 
 ```bash
@@ -183,13 +193,28 @@ helm upgrade sealaf deploy/charts/sealaf -n sealaf-system --reuse-values --wait
 helm rollback sealaf <REVISION> -n sealaf-system --wait
 ```
 
-删除应用：
+完整卸载：
 
 ```bash
-helm uninstall sealaf -n sealaf-system
+sealos run <sealaf-image> -e SEALAF_ACTION=uninstall
 ```
 
-`helm uninstall` 会删除 Helm 管理的 Sealaf 应用资源。默认不会删除 `sealaf-mongodb` Cluster，也不会删除其 PVC。数据库如需删除，需要单独确认后手动处理。
+卸载语义是完整删除内置部署：
+
+- 先备份现有资源到 `/tmp/sealos-backup/sealaf/adopt-<timestamp>.yaml`。
+- 删除 Helm release `sealaf`。
+- 清理已知应用残留资源。
+- 默认删除内置 `sealaf-mongodb` Cluster、MongoDB 凭据 Secret、ServiceAccount 和 PVC。
+
+如只想卸载应用但保留内置数据库，可显式关闭数据库删除：
+
+```bash
+sealos run <sealaf-image> \
+  -e SEALAF_ACTION=uninstall \
+  -e SEALAF_UNINSTALL_DELETE_DATABASE=false
+```
+
+直接执行 `helm uninstall sealaf -n sealaf-system` 只会删除 Helm release 中记录的资源。对于已由新版脚本升级接管过的环境，`sealaf-mongodb` Cluster 会随 Helm 删除；PVC 和凭据残留仍建议用 `SEALAF_ACTION=uninstall` 清理。
 
 ## MongoDB 凭据获取逻辑
 
@@ -225,6 +250,10 @@ mongodb://<username>:<password>@<endpoint>/<database>?authSource=admin&replicaSe
 | `HELM_OPTS` | 空 | 额外 Helm 参数，如 `--timeout 10m --debug`。 |
 | `VALUES_FILE` | `/root/.sealos/cloud/values/apps/sealaf/sealaf-values.yaml` | 额外 values 文件路径；存在时会传给 Helm。 |
 | `ENABLE_APP` | `true` | 是否创建 `app-system` 下的 Sealos App CR。 |
+| `SEALAF_ACTION` | `install` | 执行动作：`install` / `upgrade` 执行安装或升级；`uninstall` 执行完整卸载。兼容 `ACTION`。 |
+| `UNINSTALL_TIMEOUT` | `10m` | 完整卸载时等待 Kubernetes 资源删除的超时时间。 |
+| `SEALAF_UNINSTALL_DELETE_DATABASE` | `true` | 完整卸载时是否删除内置 MongoDB Cluster、凭据和 PVC。 |
+| `SEALAF_DELETE_NAMESPACE` | `false` | 完整卸载后是否删除 `NAMESPACE`。 |
 
 ### 旧资源接管和备份参数
 
@@ -264,6 +293,7 @@ mongodb://<username>:<password>@<endpoint>/<database>?authSource=admin&replicaSe
 | `MONGODB_SERVICE_VERSION` | `8.0.4` | `serviceVersion` 模式使用的 MongoDB service version。兼容旧变量 `mongodbServiceVersion`。 |
 | `MONGODB_CLUSTER_DEFINITION_REF` | `mongodb` | `clusterVersionRef` 模式使用的 ClusterDefinition。兼容旧变量 `mongodbClusterDefinitionRef`。 |
 | `MONGODB_CLUSTER_VERSION_REF` | `mongodb-5.0` | `clusterVersionRef` 模式使用的 ClusterVersion。兼容旧变量 `mongodbClusterVersionRef`。 |
+| `MONGODB_MANAGE_CLUSTER` | 自动 | 是否把内置 MongoDB Cluster 纳入 Helm release。未显式传 `MONGODB_URI` 时默认 `true`，显式传外部 `MONGODB_URI` 时默认 `false`。兼容旧变量 `mongodbManageCluster`。 |
 | `MONGODB_CONN_CREDENTIAL_SECRET` | `${MONGODB_CLUSTER_NAME}-conn-credential` | conn credential Secret 名。兼容旧变量 `mongodbConnCredentialSecret`。 |
 | `MONGODB_ACCOUNT_ROOT_SECRET` | `${MONGODB_CLUSTER_NAME}-account-root` | account root Secret 名。兼容旧变量 `mongodbAccountRootSecret`。 |
 | `MONGODB_SECRET_WAIT_TIMEOUT` | `600` | 等待 MongoDB 凭据 Secret 的超时时间，单位秒。兼容旧变量 `mongodbSecretWaitTimeout`。 |
@@ -333,8 +363,8 @@ sealos run <sealaf-image> \
 helm status sealaf -n sealaf-system
 ```
 
-卸载应用：
+完整卸载：
 
 ```bash
-helm uninstall sealaf -n sealaf-system
+sealos run <sealaf-image> -e SEALAF_ACTION=uninstall
 ```

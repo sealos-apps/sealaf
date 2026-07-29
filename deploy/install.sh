@@ -174,6 +174,10 @@ backup_sealaf_resources() {
   backup_namespaced_resource "${NAMESPACE}" deployment sealaf-server
   backup_namespaced_resource "${NAMESPACE}" ingress sealaf-web
   backup_namespaced_resource "${NAMESPACE}" ingress sealaf-server
+  backup_namespaced_resource "${NAMESPACE}" cluster.apps.kubeblocks.io "${MONGODB_CLUSTER_NAME:-sealaf-mongodb}"
+  backup_namespaced_resource "${NAMESPACE}" secret "${MONGODB_CONN_CREDENTIAL_SECRET:-sealaf-mongodb-conn-credential}"
+  backup_namespaced_resource "${NAMESPACE}" secret "${MONGODB_ACCOUNT_ROOT_SECRET:-sealaf-mongodb-account-root}"
+  backup_namespaced_resource "${NAMESPACE}" pvc "data-${MONGODB_CLUSTER_NAME:-sealaf-mongodb}-${MONGODB_COMPONENT_NAME:-mongodb}-0"
   backup_namespaced_resource app-system app sealaf
   backup_cluster_resource clusterrole sealaf-role
   backup_cluster_resource clusterrolebinding sealaf-rolebinding
@@ -191,6 +195,10 @@ adopt_existing_resources() {
   fi
 
   if is_existing_release; then
+    if [ "${MONGODB_MANAGE_CLUSTER}" = "true" ]; then
+      backup_sealaf_resources
+      adopt_namespaced_resource "${NAMESPACE}" cluster.apps.kubeblocks.io "${MONGODB_CLUSTER_NAME}"
+    fi
     return
   fi
 
@@ -204,6 +212,7 @@ adopt_existing_resources() {
   adopt_namespaced_resource "${NAMESPACE}" deployment sealaf-server
   adopt_namespaced_resource "${NAMESPACE}" ingress sealaf-web
   adopt_namespaced_resource "${NAMESPACE}" ingress sealaf-server
+  adopt_namespaced_resource "${NAMESPACE}" cluster.apps.kubeblocks.io "${MONGODB_CLUSTER_NAME}"
 
   if [ "${ENABLE_APP}" = "true" ]; then
     adopt_namespaced_resource app-system app sealaf
@@ -428,11 +437,120 @@ ensure_mongodb_uri() {
   error "Timed out waiting for MongoDB credentials. Checked ${MONGODB_CONN_CREDENTIAL_SECRET}, ${MONGODB_ACCOUNT_ROOT_SECRET}, and sealaf-config"
 }
 
+delete_namespaced_resource() {
+  local namespace=$1
+  local kind=$2
+  local name=$3
+
+  if kubectl -n "${namespace}" get "${kind}" "${name}" >/dev/null 2>&1; then
+    info "Deleting ${kind}/${name} in namespace ${namespace}"
+    kubectl -n "${namespace}" delete "${kind}" "${name}" --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null
+  fi
+}
+
+delete_cluster_resource() {
+  local kind=$1
+  local name=$2
+
+  if kubectl get "${kind}" "${name}" >/dev/null 2>&1; then
+    info "Deleting cluster resource ${kind}/${name}"
+    kubectl delete "${kind}" "${name}" --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null
+  fi
+}
+
+cleanup_known_application_resources() {
+  delete_namespaced_resource "${NAMESPACE}" serviceaccount sealaf-sa
+  delete_namespaced_resource "${NAMESPACE}" secret sealaf-config
+  delete_namespaced_resource "${NAMESPACE}" service sealaf-web
+  delete_namespaced_resource "${NAMESPACE}" service sealaf-server
+  delete_namespaced_resource "${NAMESPACE}" deployment sealaf-web
+  delete_namespaced_resource "${NAMESPACE}" deployment sealaf-server
+  delete_namespaced_resource "${NAMESPACE}" ingress sealaf-web
+  delete_namespaced_resource "${NAMESPACE}" ingress sealaf-server
+  delete_namespaced_resource app-system app sealaf
+  delete_cluster_resource clusterrole sealaf-role
+  delete_cluster_resource clusterrolebinding sealaf-rolebinding
+}
+
+delete_mongodb_pvcs() {
+  local pvc pvc_prefix
+
+  pvc_prefix="data-${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}-"
+  for pvc in $(kubectl -n "${NAMESPACE}" get pvc -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep "^${pvc_prefix}" || true); do
+    delete_namespaced_resource "${NAMESPACE}" pvc "${pvc}"
+  done
+
+  kubectl -n "${NAMESPACE}" delete pvc \
+    -l "app.kubernetes.io/instance=${MONGODB_CLUSTER_NAME}" \
+    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || true
+  kubectl -n "${NAMESPACE}" delete pvc \
+    -l "apps.kubeblocks.io/cluster-name=${MONGODB_CLUSTER_NAME}" \
+    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || true
+}
+
+delete_prefixed_namespaced_resources() {
+  local namespace=$1
+  local kind=$2
+  local prefix=$3
+  local name
+
+  for name in $(kubectl -n "${namespace}" get "${kind}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep "^${prefix}" || true); do
+    delete_namespaced_resource "${namespace}" "${kind}" "${name}"
+  done
+}
+
+cleanup_internal_mongodb() {
+  if [ "${SEALAF_UNINSTALL_DELETE_DATABASE}" != "true" ]; then
+    warn "Skipping MongoDB deletion because SEALAF_UNINSTALL_DELETE_DATABASE=${SEALAF_UNINSTALL_DELETE_DATABASE}"
+    return
+  fi
+
+  delete_namespaced_resource "${NAMESPACE}" cluster.apps.kubeblocks.io "${MONGODB_CLUSTER_NAME}"
+  delete_namespaced_resource "${NAMESPACE}" statefulset "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}"
+  delete_namespaced_resource "${NAMESPACE}" service "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}"
+  delete_namespaced_resource "${NAMESPACE}" service "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}-headless"
+  delete_namespaced_resource "${NAMESPACE}" secret "${MONGODB_CONN_CREDENTIAL_SECRET}"
+  delete_namespaced_resource "${NAMESPACE}" secret "${MONGODB_ACCOUNT_ROOT_SECRET}"
+  delete_namespaced_resource "${NAMESPACE}" serviceaccount "${MONGODB_SERVICE_ACCOUNT_NAME}"
+  delete_mongodb_pvcs
+  delete_prefixed_namespaced_resources "${NAMESPACE}" configmap "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}"
+  delete_prefixed_namespaced_resources "${NAMESPACE}" secret "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}"
+
+  kubectl -n "${NAMESPACE}" delete configmap \
+    -l "app.kubernetes.io/instance=${MONGODB_CLUSTER_NAME}" \
+    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || true
+  kubectl -n "${NAMESPACE}" delete configmap \
+    -l "apps.kubeblocks.io/cluster-name=${MONGODB_CLUSTER_NAME}" \
+    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || true
+}
+
+uninstall_sealaf() {
+  info "Starting full Sealaf uninstall for release ${RELEASE_NAME} in namespace ${NAMESPACE}"
+  backup_sealaf_resources
+
+  if is_existing_release; then
+    info "Uninstalling Helm release ${RELEASE_NAME}"
+    helm uninstall "${RELEASE_NAME}" -n "${NAMESPACE}" --wait --timeout "${UNINSTALL_TIMEOUT}"
+  else
+    warn "Helm release ${RELEASE_NAME} not found in namespace ${NAMESPACE}, cleaning known resources"
+  fi
+
+  cleanup_known_application_resources
+  cleanup_internal_mongodb
+
+  if [ "${SEALAF_DELETE_NAMESPACE}" = "true" ]; then
+    delete_cluster_resource namespace "${NAMESPACE}"
+  fi
+
+  info "Sealaf uninstall completed"
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHART_DIR="${CHART_DIR:-${SCRIPT_DIR}/charts/sealaf}"
 
 RELEASE_NAME="${RELEASE_NAME:-sealaf}"
 NAMESPACE="${NAMESPACE:-sealaf-system}"
+SEALAF_ACTION="${SEALAF_ACTION:-${ACTION:-install}}"
 HELM_OPTS="${HELM_OPTS:-}"
 ENABLE_APP="${ENABLE_APP:-true}"
 STRICT_SECRET_REUSE="${STRICT_SECRET_REUSE:-true}"
@@ -441,6 +559,9 @@ SEALAF_FORCE_ADOPT="${SEALAF_FORCE_ADOPT:-false}"
 SEALAF_BACKUP_ENABLED="${SEALAF_BACKUP_ENABLED:-true}"
 SEALAF_BACKUP_DIR="${SEALAF_BACKUP_DIR:-/tmp/sealos-backup/sealaf}"
 SEALAF_BACKUP_FILE="${SEALAF_BACKUP_FILE:-}"
+SEALAF_UNINSTALL_DELETE_DATABASE="${SEALAF_UNINSTALL_DELETE_DATABASE:-true}"
+SEALAF_DELETE_NAMESPACE="${SEALAF_DELETE_NAMESPACE:-false}"
+UNINSTALL_TIMEOUT="${UNINSTALL_TIMEOUT:-10m}"
 
 CLOUD_DOMAIN="${CLOUD_DOMAIN:-${cloudDomain:-}}"
 CLOUD_PORT="${CLOUD_PORT:-${cloudPort:-}}"
@@ -459,6 +580,8 @@ MONGODB_PORT="${MONGODB_PORT:-${mongodbPort:-27017}}"
 MONGODB_SERVICE_VERSION="${MONGODB_SERVICE_VERSION:-${mongodbServiceVersion:-8.0.4}}"
 MONGODB_CLUSTER_DEFINITION_REF="${MONGODB_CLUSTER_DEFINITION_REF:-${mongodbClusterDefinitionRef:-mongodb}}"
 MONGODB_CLUSTER_VERSION_REF="${MONGODB_CLUSTER_VERSION_REF:-${mongodbClusterVersionRef:-mongodb-5.0}}"
+MONGODB_SERVICE_ACCOUNT_NAME="${MONGODB_SERVICE_ACCOUNT_NAME:-${mongodbServiceAccountName:-${MONGODB_CLUSTER_NAME}}}"
+MONGODB_MANAGE_CLUSTER="${MONGODB_MANAGE_CLUSTER:-${mongodbManageCluster:-}}"
 MONGODB_API_MODE="${MONGODB_API_MODE:-${mongodbApiMode:-auto}}"
 KUBEBLOCKS_TEMPLATE_VERSION="${KUBEBLOCKS_TEMPLATE_VERSION:-${kubeblocksTemplateVersion:-auto}}"
 MONGODB_CONN_CREDENTIAL_SECRET="${MONGODB_CONN_CREDENTIAL_SECRET:-${mongodbConnCredentialSecret:-${MONGODB_CLUSTER_NAME}-conn-credential}}"
@@ -469,6 +592,26 @@ mongodb_uri_source="${mongodb_uri_source:-}"
 RESOLVED_MONGODB_URI="${RESOLVED_MONGODB_URI:-}"
 RESOLVED_MONGODB_API_MODE="$(detect_mongodb_api_mode)"
 RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION="$(resolve_kubeblocks_template_version)"
+
+if [ -z "${MONGODB_MANAGE_CLUSTER}" ]; then
+  if [ -n "${MONGODB_URI}" ]; then
+    MONGODB_MANAGE_CLUSTER="false"
+  else
+    MONGODB_MANAGE_CLUSTER="true"
+  fi
+fi
+
+case "${SEALAF_ACTION}" in
+  install|upgrade)
+    ;;
+  uninstall)
+    uninstall_sealaf
+    exit 0
+    ;;
+  *)
+    error "Unsupported SEALAF_ACTION=${SEALAF_ACTION}. Expected install, upgrade, or uninstall."
+    ;;
+esac
 
 if [ -z "${CLOUD_DOMAIN}" ]; then
   CLOUD_DOMAIN="$(get_sealos_config cloudDomain)"
@@ -527,6 +670,7 @@ helm_set_args=(
   --set-string "mongodb.serviceVersion=${MONGODB_SERVICE_VERSION}"
   --set-string "mongodb.database=${MONGODB_DATABASE}"
   --set "mongodb.port=${MONGODB_PORT}"
+  --set "mongodb.manageCluster=${MONGODB_MANAGE_CLUSTER}"
 )
 
 if [ -n "${MONGODB_URI}" ]; then
