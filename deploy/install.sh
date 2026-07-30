@@ -133,6 +133,30 @@ adopt_cluster_resource() {
   fi
 }
 
+initialize_mongodb_secret_names() {
+  MONGODB_CONN_CREDENTIAL_SECRET="${MONGODB_CONN_CREDENTIAL_SECRET:-${mongodbConnCredentialSecret:-${MONGODB_CLUSTER_NAME}-conn-credential}}"
+  MONGODB_COMPONENT_ACCOUNT_ROOT_SECRET="${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}-account-root"
+  MONGODB_LEGACY_ACCOUNT_ROOT_SECRET="${MONGODB_CLUSTER_NAME}-account-root"
+  MONGODB_ACCOUNT_ROOT_SECRET="${MONGODB_ACCOUNT_ROOT_SECRET:-${mongodbAccountRootSecret:-${MONGODB_COMPONENT_ACCOUNT_ROOT_SECRET}}}"
+}
+
+mongodb_account_root_secret_candidates() {
+  local secret_name
+  local seen=" "
+
+  for secret_name in \
+    "${MONGODB_ACCOUNT_ROOT_SECRET:-}" \
+    "${MONGODB_COMPONENT_ACCOUNT_ROOT_SECRET:-}" \
+    "${MONGODB_LEGACY_ACCOUNT_ROOT_SECRET:-}"; do
+    [ -n "${secret_name}" ] || continue
+    case "${seen}" in
+      *" ${secret_name} "*) continue ;;
+    esac
+    printf '%s\n' "${secret_name}"
+    seen="${seen}${secret_name} "
+  done
+}
+
 backup_namespaced_resource() {
   local namespace=$1
   local kind=$2
@@ -155,7 +179,7 @@ backup_cluster_resource() {
 }
 
 backup_sealaf_resources() {
-  local ts
+  local secret_name ts
 
   if [ "${SEALAF_BACKUP_ENABLED}" != "true" ]; then
     return
@@ -176,7 +200,9 @@ backup_sealaf_resources() {
   backup_namespaced_resource "${NAMESPACE}" ingress sealaf-server
   backup_namespaced_resource "${NAMESPACE}" cluster.apps.kubeblocks.io "${MONGODB_CLUSTER_NAME:-sealaf-mongodb}"
   backup_namespaced_resource "${NAMESPACE}" secret "${MONGODB_CONN_CREDENTIAL_SECRET:-sealaf-mongodb-conn-credential}"
-  backup_namespaced_resource "${NAMESPACE}" secret "${MONGODB_ACCOUNT_ROOT_SECRET:-sealaf-mongodb-account-root}"
+  while IFS= read -r secret_name; do
+    backup_namespaced_resource "${NAMESPACE}" secret "${secret_name}"
+  done < <(mongodb_account_root_secret_candidates)
   backup_namespaced_resource "${NAMESPACE}" pvc "data-${MONGODB_CLUSTER_NAME:-sealaf-mongodb}-${MONGODB_COMPONENT_NAME:-mongodb}-0"
   backup_namespaced_resource app-system app sealaf
   backup_cluster_resource clusterrole sealaf-role
@@ -355,7 +381,7 @@ build_mongodb_uri_from_account_root() {
 }
 
 resolve_existing_mongodb_uri() {
-  local uri=""
+  local secret_name uri=""
 
   if uri="$(build_mongodb_uri_from_conn_credential "${MONGODB_CONN_CREDENTIAL_SECRET}" 2>/dev/null)"; then
     mongodb_uri_source="secret:${MONGODB_CONN_CREDENTIAL_SECRET}"
@@ -364,12 +390,14 @@ resolve_existing_mongodb_uri() {
     return 0
   fi
 
-  if uri="$(build_mongodb_uri_from_account_root "${MONGODB_ACCOUNT_ROOT_SECRET}" 2>/dev/null)"; then
-    mongodb_uri_source="secret:${MONGODB_ACCOUNT_ROOT_SECRET}"
-    MONGODB_SECRET_TYPE="accountRoot"
-    RESOLVED_MONGODB_URI="${uri}"
-    return 0
-  fi
+  while IFS= read -r secret_name; do
+    if uri="$(build_mongodb_uri_from_account_root "${secret_name}" 2>/dev/null)"; then
+      mongodb_uri_source="secret:${secret_name}"
+      MONGODB_SECRET_TYPE="accountRoot"
+      RESOLVED_MONGODB_URI="${uri}"
+      return 0
+    fi
+  done < <(mongodb_account_root_secret_candidates)
 
   if uri="$(get_secret_data sealaf-config DATABASE_URL || true)"; [ -n "${uri}" ]; then
     mongodb_uri_source="secret:sealaf-config"
@@ -434,7 +462,7 @@ ensure_mongodb_uri() {
     sleep 2
   done
 
-  error "Timed out waiting for MongoDB credentials. Checked ${MONGODB_CONN_CREDENTIAL_SECRET}, ${MONGODB_ACCOUNT_ROOT_SECRET}, and sealaf-config"
+  error "Timed out waiting for MongoDB credentials. Checked ${MONGODB_CONN_CREDENTIAL_SECRET}, ${MONGODB_ACCOUNT_ROOT_SECRET}, ${MONGODB_COMPONENT_ACCOUNT_ROOT_SECRET}, ${MONGODB_LEGACY_ACCOUNT_ROOT_SECRET}, and sealaf-config"
 }
 
 delete_namespaced_resource() {
@@ -500,6 +528,8 @@ delete_prefixed_namespaced_resources() {
 }
 
 cleanup_internal_mongodb() {
+  local secret_name
+
   if [ "${SEALAF_UNINSTALL_DELETE_DATABASE}" != "true" ]; then
     warn "Skipping MongoDB deletion because SEALAF_UNINSTALL_DELETE_DATABASE=${SEALAF_UNINSTALL_DELETE_DATABASE}"
     return
@@ -510,7 +540,9 @@ cleanup_internal_mongodb() {
   delete_namespaced_resource "${NAMESPACE}" service "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}"
   delete_namespaced_resource "${NAMESPACE}" service "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}-headless"
   delete_namespaced_resource "${NAMESPACE}" secret "${MONGODB_CONN_CREDENTIAL_SECRET}"
-  delete_namespaced_resource "${NAMESPACE}" secret "${MONGODB_ACCOUNT_ROOT_SECRET}"
+  while IFS= read -r secret_name; do
+    delete_namespaced_resource "${NAMESPACE}" secret "${secret_name}"
+  done < <(mongodb_account_root_secret_candidates)
   delete_namespaced_resource "${NAMESPACE}" serviceaccount "${MONGODB_SERVICE_ACCOUNT_NAME}"
   delete_mongodb_pvcs
   delete_prefixed_namespaced_resources "${NAMESPACE}" configmap "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}"
@@ -544,6 +576,10 @@ uninstall_sealaf() {
 
   info "Sealaf uninstall completed"
 }
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHART_DIR="${CHART_DIR:-${SCRIPT_DIR}/charts/sealaf}"
@@ -584,8 +620,7 @@ MONGODB_SERVICE_ACCOUNT_NAME="${MONGODB_SERVICE_ACCOUNT_NAME:-${mongodbServiceAc
 MONGODB_MANAGE_CLUSTER="${MONGODB_MANAGE_CLUSTER:-${mongodbManageCluster:-}}"
 MONGODB_API_MODE="${MONGODB_API_MODE:-${mongodbApiMode:-auto}}"
 KUBEBLOCKS_TEMPLATE_VERSION="${KUBEBLOCKS_TEMPLATE_VERSION:-${kubeblocksTemplateVersion:-auto}}"
-MONGODB_CONN_CREDENTIAL_SECRET="${MONGODB_CONN_CREDENTIAL_SECRET:-${mongodbConnCredentialSecret:-${MONGODB_CLUSTER_NAME}-conn-credential}}"
-MONGODB_ACCOUNT_ROOT_SECRET="${MONGODB_ACCOUNT_ROOT_SECRET:-${mongodbAccountRootSecret:-${MONGODB_CLUSTER_NAME}-account-root}}"
+initialize_mongodb_secret_names
 MONGODB_SECRET_WAIT_TIMEOUT="${MONGODB_SECRET_WAIT_TIMEOUT:-${mongodbSecretWaitTimeout:-600}}"
 MONGODB_SECRET_TYPE="${MONGODB_SECRET_TYPE:-}"
 mongodb_uri_source="${mongodb_uri_source:-}"

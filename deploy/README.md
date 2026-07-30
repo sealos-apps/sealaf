@@ -177,7 +177,7 @@ sealos run <new-sealaf-image>
 升级语义是保留数据库升级应用：
 
 - 复用 `sealaf-config.SERVER_JWT_SECRET`。
-- 复用 `sealaf-mongodb-conn-credential` 或外部 `MONGODB_URI`。
+- 自动复用 KB9 的 `sealaf-mongodb-mongodb-account-root`、旧版 `sealaf-mongodb-conn-credential` / `sealaf-mongodb-account-root`，或外部 `MONGODB_URI`。
 - 默认把内置 `sealaf-mongodb` Cluster 纳入 Helm release，但不删除 PVC、不清空系统库。
 - 升级 web/server、Ingress、Secret、RBAC、App 和内置 MongoDB manifest。
 
@@ -224,7 +224,10 @@ sealos run <sealaf-image> \
    - 使用 `username`、`password`、`headlessEndpoint`。
    - 如果没有 `headlessEndpoint`，fallback 到 `endpoint`。
    - 如果仍没有，fallback 到 `headlessHost + headlessPort` 或 `host + port`。
-2. 读取 `${MONGODB_CLUSTER_NAME}-account-root`，默认 `sealaf-mongodb-account-root`。
+2. 依次读取 account-root Secret 候选：
+   - 显式设置的 `MONGODB_ACCOUNT_ROOT_SECRET`。
+   - KB9 组件级名称 `${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}-account-root`，默认 `sealaf-mongodb-mongodb-account-root`。
+   - 旧版名称 `${MONGODB_CLUSTER_NAME}-account-root`，默认 `sealaf-mongodb-account-root`。
    - 使用 `username`、`password`。
    - host 拼为 `${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}.${NAMESPACE}.svc:${MONGODB_PORT}`。
 3. 读取 `sealaf-config.DATABASE_URL`。
@@ -295,7 +298,7 @@ mongodb://<username>:<password>@<endpoint>/<database>?authSource=admin&replicaSe
 | `MONGODB_CLUSTER_VERSION_REF` | `mongodb-5.0` | `clusterVersionRef` 模式使用的 ClusterVersion。兼容旧变量 `mongodbClusterVersionRef`。 |
 | `MONGODB_MANAGE_CLUSTER` | 自动 | 是否把内置 MongoDB Cluster 纳入 Helm release。未显式传 `MONGODB_URI` 时默认 `true`，显式传外部 `MONGODB_URI` 时默认 `false`。兼容旧变量 `mongodbManageCluster`。 |
 | `MONGODB_CONN_CREDENTIAL_SECRET` | `${MONGODB_CLUSTER_NAME}-conn-credential` | conn credential Secret 名。兼容旧变量 `mongodbConnCredentialSecret`。 |
-| `MONGODB_ACCOUNT_ROOT_SECRET` | `${MONGODB_CLUSTER_NAME}-account-root` | account root Secret 名。兼容旧变量 `mongodbAccountRootSecret`。 |
+| `MONGODB_ACCOUNT_ROOT_SECRET` | `${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}-account-root` | 首选 account root Secret 名。脚本仍自动回退到旧的 `${MONGODB_CLUSTER_NAME}-account-root`；兼容旧变量 `mongodbAccountRootSecret`。 |
 | `MONGODB_SECRET_WAIT_TIMEOUT` | `600` | 等待 MongoDB 凭据 Secret 的超时时间，单位秒。兼容旧变量 `mongodbSecretWaitTimeout`。 |
 
 升级旧系统时，server 不会自动迁移已有 `Region.deployManifest`。如果老数据没有 `defaultVersion` 和 `versions`，专属数据库仍使用旧的顶层 `deployManifest.database` 模板；只有手动补充 `defaultVersion` 和 `versions` 后，才会按 KB8/KB9 多版本模板选择。

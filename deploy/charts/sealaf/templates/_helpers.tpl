@@ -109,7 +109,11 @@ app.kubernetes.io/name: {{ include "sealaf.serverName" . }}
 {{- end }}
 
 {{- define "sealaf.mongodbRootSecretName" -}}
+{{- if eq (default "kb8" .Values.kubeblocks.templateVersion) "kb9" -}}
+{{- printf "%s-%s-account-root" .Values.mongodb.clusterName .Values.mongodb.componentName -}}
+{{- else -}}
 {{- printf "%s-account-root" .Values.mongodb.clusterName -}}
+{{- end -}}
 {{- end }}
 
 {{- define "sealaf.mongodbHost" -}}
