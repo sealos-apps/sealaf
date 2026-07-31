@@ -1,4 +1,18 @@
-import { healthzMiddleware, healthzPayload } from './healthz'
+const mockCommand = jest.fn()
+
+jest.mock('./system-database', () => ({
+  SystemDatabase: {
+    db: {
+      command: mockCommand,
+    },
+  },
+}))
+
+import {
+  healthzMiddleware,
+  healthzPayload,
+  healthzUnhealthyPayload,
+} from './healthz'
 
 function createResponse() {
   const headers = new Map<string, string>()
@@ -22,27 +36,51 @@ function createResponse() {
 }
 
 describe('healthzMiddleware', () => {
-  it('returns the standard health contract for GET /healthz', () => {
+  beforeEach(() => {
+    mockCommand.mockReset()
+  })
+
+  it('returns the standard health contract for GET /healthz', async () => {
+    mockCommand.mockResolvedValueOnce(undefined)
     const res = createResponse()
     const next = jest.fn()
 
-    healthzMiddleware(
+    await healthzMiddleware(
       { method: 'GET', path: '/healthz' } as never,
       res as never,
       next,
     )
 
     expect(next).not.toHaveBeenCalled()
+    expect(mockCommand).toHaveBeenCalledWith({ ping: 1 })
     expect(res.statusCode).toBe(200)
     expect(res.headers.get('Cache-Control')).toBe('no-store')
     expect(res.body).toEqual(healthzPayload)
   })
 
-  it('passes non-health requests to the next handler', () => {
+  it('returns an error payload when the database ping fails', async () => {
+    mockCommand.mockRejectedValueOnce(new Error('db down'))
     const res = createResponse()
     const next = jest.fn()
 
-    healthzMiddleware(
+    await healthzMiddleware(
+      { method: 'GET', path: '/healthz' } as never,
+      res as never,
+      next,
+    )
+
+    expect(next).not.toHaveBeenCalled()
+    expect(mockCommand).toHaveBeenCalledWith({ ping: 1 })
+    expect(res.statusCode).toBe(503)
+    expect(res.headers.get('Cache-Control')).toBe('no-store')
+    expect(res.body).toEqual(healthzUnhealthyPayload)
+  })
+
+  it('passes non-health requests to the next handler', async () => {
+    const res = createResponse()
+    const next = jest.fn()
+
+    await healthzMiddleware(
       { method: 'GET', path: '/v1/regions' } as never,
       res as never,
       next,

@@ -38,8 +38,10 @@ helm upgrade -i "${RELEASE_NAME}" -n "${NAMESPACE}" --create-namespace "${CHART_
 
 ## 健康检查
 
-Sealaf web 和 server 都暴露稳定的 `GET /healthz`。接口返回
-`{"service":"sealaf","status":"ok"}`，并设置 `Cache-Control: no-store`。
+Sealaf web 和 server 都暴露稳定的 `GET /healthz`。web 由 nginx 直接返回
+`{"service":"sealaf","status":"ok"}`，server 的 `/healthz` 会先对系统
+数据库执行一次 MongoDB ping，只有在可达时才返回 200。响应都会设置
+`Cache-Control: no-store`。
 Helm chart 使用 `/healthz` 作为 web 和 server 的 startup、liveness 和
 readiness 探针路径。
 
