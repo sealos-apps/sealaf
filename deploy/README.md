@@ -36,6 +36,17 @@ helm upgrade -i "${RELEASE_NAME}" -n "${NAMESPACE}" --create-namespace "${CHART_
 - `HELM_OPTS`: 通过 `sealos run -e HELM_OPTS=...` 传入的额外 Helm 参数。
 - `--wait`: 等待 Kubernetes 资源 ready 后再退出。
 
+## 健康检查
+
+Sealaf web 和 server 都暴露稳定的 `GET /healthz`。web 由 nginx 直接返回
+`{"service":"sealaf","status":"ok"}`，server 的 `/healthz` 会检查必要配置
+和系统数据库连通性：`DATABASE_URL`、`JWT_SECRET`、
+`DEFAULT_REGION_RUNTIME_DOMAIN` 必须存在，`DEFAULT_REGION_TLS_ENABLED=true`
+时还要求 `DEFAULT_REGION_TLS_WILDCARD_CERTIFICATE_SECRET_NAME` 可用。响应都
+会设置 `Cache-Control: no-store`。
+Helm chart 使用 `/healthz` 作为 web 和 server 的 startup、liveness 和
+readiness 探针路径。
+
 ## 初始安装
 
 全新环境直接执行：

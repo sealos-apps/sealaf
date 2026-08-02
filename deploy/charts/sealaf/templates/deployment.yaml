@@ -52,6 +52,10 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with .Values.web.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with .Values.web.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
@@ -181,6 +185,10 @@ spec:
             {{- end }}
           {{- with .Values.server.resources }}
           resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.server.startupProbe }}
+          startupProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           {{- with .Values.server.livenessProbe }}

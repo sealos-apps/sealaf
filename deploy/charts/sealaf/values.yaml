@@ -99,9 +99,18 @@ web:
     requests:
       cpu: 20m
       memory: 25Mi
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: http
+      scheme: HTTP
+    timeoutSeconds: 1
+    periodSeconds: 5
+    successThreshold: 1
+    failureThreshold: 24
   livenessProbe:
     httpGet:
-      path: /
+      path: /healthz
       port: http
       scheme: HTTP
     timeoutSeconds: 1
@@ -110,7 +119,7 @@ web:
     failureThreshold: 3
   readinessProbe:
     httpGet:
-      path: /
+      path: /healthz
       port: http
       scheme: HTTP
     timeoutSeconds: 1
@@ -144,9 +153,18 @@ server:
     requests:
       cpu: 100m
       memory: 204Mi
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: http
+      scheme: HTTP
+    timeoutSeconds: 1
+    periodSeconds: 5
+    successThreshold: 1
+    failureThreshold: 24
   livenessProbe:
     httpGet:
-      path: /v1/regions
+      path: /healthz
       port: http
       scheme: HTTP
     timeoutSeconds: 1
@@ -155,7 +173,7 @@ server:
     failureThreshold: 3
   readinessProbe:
     httpGet:
-      path: /v1/regions
+      path: /healthz
       port: http
       scheme: HTTP
     timeoutSeconds: 1
