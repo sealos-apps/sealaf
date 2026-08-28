@@ -1,9 +1,9 @@
 // components/SealosProvider.tsx
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { EVENT_NAME } from "@zjy365/sealos-desktop-sdk";
-import { SessionV1 } from "@zjy365/sealos-desktop-sdk/*";
-import { createSealosApp, sealosApp } from "@zjy365/sealos-desktop-sdk/app";
+import { EVENT_NAME } from "@labring/sealos-desktop-sdk";
+import type { SessionV1 } from "@labring/sealos-desktop-sdk";
+import { createSealosApp, sealosApp } from "@labring/sealos-desktop-sdk/app";
 
 import useSessionStore from "@/pages/auth/store";
 
@@ -39,6 +39,27 @@ const InitSealosApp = () => {
           avatar: "",
           k8sUsername: "",
           nsid: "",
+        },
+        subscription: {
+          ID: "",
+          PlanName: "",
+          Workspace: "",
+          RegionDomain: "",
+          UserUID: "",
+          Status: "",
+          PayStatus: "",
+          PayMethod: "",
+          Stripe: null,
+          TrafficStatus: "",
+          CurrentPeriodStartAt: "",
+          CurrentPeriodEndAt: "",
+          CancelAtPeriodEnd: false,
+          CancelAt: "",
+          CreateAt: "",
+          UpdateAt: "",
+          ExpireAt: null,
+          Traffic: null,
+          type: "PAYG",
         },
         kubeconfig: sealosKc,
       };
