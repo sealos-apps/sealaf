@@ -170,7 +170,7 @@ The web frontend is a **React 18** SPA using:
 
 **Key Features:**
 - Monaco Editor integration for cloud function editing (`@monaco-editor/react`)
-- Sealos Desktop SDK integration (`@zjy365/sealos-desktop-sdk`)
+- Sealos Desktop SDK integration (`@labring/sealos-desktop-sdk`)
 - i18next for internationalization
 - Sentry for error tracking and performance monitoring
 

@@ -1,4 +1,4 @@
-import type { SessionV1 } from "@zjy365/sealos-desktop-sdk";
+import type { SessionV1 } from "@labring/sealos-desktop-sdk";
 import * as yaml from "js-yaml";
 import { create } from "zustand";
 import { devtools, persist } from "zustand/middleware";
