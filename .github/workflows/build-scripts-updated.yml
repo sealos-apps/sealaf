@@ -31,7 +31,9 @@ jobs:
         uses: azure/setup-helm@v4
 
       - name: Test deployment scripts and Helm chart
-        run: bash deploy/tests/mongodb-secret-resolution.sh
+        run: |
+          bash deploy/tests/mongodb-secret-resolution.sh
+          bash deploy/tests/ingress-embedded-origins.sh
 
       - name: Log workflow completion
         run: |

@@ -293,6 +293,20 @@ mongodb://<username>:<password>@<endpoint>/<database>?authSource=admin&replicaSe
 | `SERVER_JWT_SECRET` | 自动复用或生成 | 指定 server JWT secret。未设置时优先复用 `sealaf-config.SERVER_JWT_SECRET`。 |
 | `STRICT_SECRET_REUSE` | `true` | 已有 Helm release 但找不到旧 JWT Secret 时，是否拒绝生成新值。 |
 
+### iframe 嵌入配置
+
+在 `VALUES_FILE`（或其他 Helm values 覆盖文件）中配置允许的 iframe 父页面精确 origin：
+
+```yaml
+ingress:
+  # 允许作为 iframe 父页面的精确 origin，包含协议和可选端口。
+  embeddedAllowedOrigins:
+    - http://province.example.com:8080
+    - https://province.example.com
+```
+
+列表项必须包含 `http://` 或 `https://` 协议，且只能包含主机名和可选端口；不支持通配符、通配域名或 URL path。配置会追加到 Web Ingress 的 `frame-ancestors`，不会改变 Ingress host/path、`cloudDomain`、SSO 或 CORS。
+
 ### MongoDB 参数
 
 | 参数 | 默认值 | 说明 |
