@@ -105,7 +105,17 @@ app.kubernetes.io/name: {{ include "sealaf.serverName" . }}
 
 {{- define "sealaf.contentSecurityPolicy" -}}
 {{- $domain := include "sealaf.domainWithPort" . -}}
-{{- printf "default-src * blob: data: *.%s %s; img-src * data: blob: resource: *.%s %s; connect-src * wss: blob: resource:; style-src 'self' 'unsafe-inline' blob: *.%s %s resource:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: *.%s %s resource: *.baidu.com *.bdstatic.com; frame-src 'self' *.%s %s mailto: tel: weixin: mtt: *.baidu.com; frame-ancestors 'self' https://%s https://*.%s" $domain $domain $domain $domain $domain $domain $domain $domain $domain $domain $domain $domain -}}
+{{- $embeddedAllowedOrigins := join " " .Values.ingress.embeddedAllowedOrigins -}}
+{{- range $origin := .Values.ingress.embeddedAllowedOrigins -}}
+{{- if not (and (kindIs "string" $origin) (regexMatch "^https?://([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?::[0-9]{1,5})?$" $origin)) -}}
+{{- fail (printf "ingress.embeddedAllowedOrigins contains invalid exact origin %q; use http:// or https:// with a hostname and optional port only" $origin) -}}
+{{- end -}}
+{{- end -}}
+{{- $embeddedAllowedOriginsSuffix := "" -}}
+{{- if $embeddedAllowedOrigins -}}
+{{- $embeddedAllowedOriginsSuffix = printf " %s" $embeddedAllowedOrigins -}}
+{{- end -}}
+{{- printf "default-src * blob: data: *.%s %s; img-src * data: blob: resource: *.%s %s; connect-src * wss: blob: resource:; style-src 'self' 'unsafe-inline' blob: *.%s %s resource:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: *.%s %s resource: *.baidu.com *.bdstatic.com; frame-src 'self' *.%s %s mailto: tel: weixin: mtt: *.baidu.com; frame-ancestors 'self' https://%s https://*.%s%s" $domain $domain $domain $domain $domain $domain $domain $domain $domain $domain $domain $domain $embeddedAllowedOriginsSuffix -}}
 {{- end }}
 
 {{- define "sealaf.mongodbRootSecretName" -}}
