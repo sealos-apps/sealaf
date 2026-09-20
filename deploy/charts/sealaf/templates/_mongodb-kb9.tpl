@@ -11,7 +11,8 @@ metadata:
     app.kubernetes.io/instance: {{ .Values.mongodb.clusterName }}
     helm.sh/chart: mongodb-cluster-0.9.1
     sealaf-app: {{ .Release.Name }}
-  annotations: {}
+  annotations:
+    helm.sh/resource-policy: keep
   name: {{ .Values.mongodb.clusterName }}
   namespace: {{ .Release.Namespace }}
 spec:

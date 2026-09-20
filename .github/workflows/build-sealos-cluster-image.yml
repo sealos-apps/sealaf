@@ -197,6 +197,7 @@ jobs:
     if: ${{ needs.upstream-gate.result == 'success' }}
     outputs:
       source_sha: ${{ steps.vars.outputs.source_sha }}
+      short_sha: ${{ steps.vars.outputs.short_sha }}
       image_tag: ${{ steps.vars.outputs.image_tag }}
       cluster_tag: ${{ steps.vars.outputs.cluster_tag }}
       oss_prefix: ${{ steps.vars.outputs.oss_prefix }}
@@ -243,6 +244,7 @@ jobs:
           fi
 
           echo "source_sha=${SOURCE_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "short_sha=${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
           echo "image_tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
           echo "cluster_tag=${CLUSTER_TAG}" >> "${GITHUB_OUTPUT}"
           echo "oss_prefix=${OSS_PREFIX}" >> "${GITHUB_OUTPUT}"
@@ -315,23 +317,26 @@ jobs:
           tags: |
             ${{ env.GHCR_SEALOS_IMAGE }}:${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}
             ${{ env.DOCKERHUB_USERNAME != '' && format('docker.io/{0}/sealaf-cluster:{1}-{2}', env.DOCKERHUB_USERNAME, needs.prepare.outputs.cluster_tag, matrix.arch) || '' }}
-          labels: runnumber=${{ github.run_id }}
+          labels: |
+            runnumber=${{ github.run_id }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.source_sha }}
 
       - name: Save sealos image package
         run: |
           set -euo pipefail
           CLUSTER_TAG="${{ needs.prepare.outputs.cluster_tag }}"
+          SHORT_SHA="${{ needs.prepare.outputs.short_sha }}"
           docker pull "${GHCR_SEALOS_IMAGE}:${CLUSTER_TAG}-${{ matrix.arch }}"
           mkdir -p release-assets
-          docker save "${GHCR_SEALOS_IMAGE}:${CLUSTER_TAG}-${{ matrix.arch }}" | gzip > "release-assets/sealaf-cluster-${CLUSTER_TAG}-${{ matrix.arch }}.tar.gz"
+          docker save "${GHCR_SEALOS_IMAGE}:${CLUSTER_TAG}-${{ matrix.arch }}" | gzip > "release-assets/sealaf-cluster-${CLUSTER_TAG}-${SHORT_SHA}-${{ matrix.arch }}.tar.gz"
           ls -lh release-assets
-          du -h "release-assets/sealaf-cluster-${CLUSTER_TAG}-${{ matrix.arch }}.tar.gz"
+          du -h "release-assets/sealaf-cluster-${CLUSTER_TAG}-${SHORT_SHA}-${{ matrix.arch }}.tar.gz"
 
       - name: Upload sealos image package
         uses: actions/upload-artifact@v4
         with:
-          name: sealos-image-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}
-          path: release-assets/sealaf-cluster-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}.tar.gz
+          name: sealos-image-${{ needs.prepare.outputs.cluster_tag }}-${{ needs.prepare.outputs.short_sha }}-${{ matrix.arch }}
+          path: release-assets/sealaf-cluster-${{ needs.prepare.outputs.cluster_tag }}-${{ needs.prepare.outputs.short_sha }}-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
           retention-days: 14
 
@@ -414,7 +419,7 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           path: release-assets
-          pattern: sealos-image-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}
+          pattern: sealos-image-${{ needs.prepare.outputs.cluster_tag }}-${{ needs.prepare.outputs.short_sha }}-${{ matrix.arch }}
           merge-multiple: true
 
       - name: Install oss tools
@@ -426,11 +431,11 @@ jobs:
       - name: Sync to OSS
         run: |
           set -euo pipefail
-          TAR_NAME="release-assets/sealaf-cluster-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}.tar.gz"
+          TAR_NAME="release-assets/sealaf-cluster-${{ needs.prepare.outputs.cluster_tag }}-${{ needs.prepare.outputs.short_sha }}-${{ matrix.arch }}.tar.gz"
           md5sum "${TAR_NAME}" > "${TAR_NAME}.md5"
 
           OSS_PREFIX="${{ needs.prepare.outputs.oss_prefix }}"
-          OSS_TAR_NAME="sealaf-cluster-${{ needs.prepare.outputs.cluster_tag }}-${{ matrix.arch }}.tar"
+          OSS_TAR_NAME="sealaf-cluster-${{ needs.prepare.outputs.cluster_tag }}-${{ needs.prepare.outputs.short_sha }}-${{ matrix.arch }}.tar.gz"
 
           if [[ -f "${TAR_NAME}" ]]; then
             ossutil64 cp -f -e ${{ secrets.OSS_ENDPOINT }} \
