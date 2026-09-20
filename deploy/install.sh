@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PLATFORM_TOOLS_FILE="${PLATFORM_TOOLS_FILE:-/root/.sealos/cloud/scripts/tools.sh}"
+if [ -r "${PLATFORM_TOOLS_FILE}" ]; then
+  # shellcheck source=/dev/null
+  source "${PLATFORM_TOOLS_FILE}"
+fi
+
 timestamp() {
   date +"%Y-%m-%d %T"
 }
@@ -14,7 +20,7 @@ warn() {
 }
 
 error() {
-  echo -e "\033[31m ERROR [$(timestamp)] >> $* \033[0m"
+  echo -e "\033[31m ERROR [$(timestamp)] >> $* \033[0m" >&2
   exit 1
 }
 
@@ -268,22 +274,65 @@ is_existing_release() {
   helm status "${RELEASE_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1
 }
 
-detect_mongodb_api_mode() {
-  if [ "${MONGODB_API_MODE}" != "auto" ]; then
-    printf '%s' "${MONGODB_API_MODE}"
-    return
+kubeblocks_template_from_version() {
+  local version=${1#v}
+
+  case "${version}" in
+    0.8.*|8.*)
+      printf '%s' "kb8"
+      ;;
+    0.9.*|9.*)
+      printf '%s' "kb9"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+read_configured_kubeblocks_version() {
+  local version=""
+
+  if declare -F read_yaml_file_path >/dev/null 2>&1; then
+    version="$(read_yaml_file_path '.global.featureConfigs.database.kubeblocksVersion' 2>/dev/null || true)"
+    if [ -z "${version}" ]; then
+      version="$(read_yaml_file_path '.global.database.kubeblocksVersion' 2>/dev/null || true)"
+    fi
   fi
 
-  if kubectl explain cluster.spec.componentSpecs.serviceVersion --api-version=apps.kubeblocks.io/v1alpha1 >/dev/null 2>&1; then
-    printf '%s' "serviceVersion"
-  else
-    printf '%s' "clusterVersionRef"
-  fi
+  printf '%s' "${version}"
+}
+
+resolve_mongodb_api_mode() {
+  local template_version=$1
+  local expected_mode
+
+  case "${template_version}" in
+    kb8) expected_mode="clusterVersionRef" ;;
+    kb9) expected_mode="serviceVersion" ;;
+    *) error "Unsupported resolved KubeBlocks template version: ${template_version}" ;;
+  esac
+
+  case "${MONGODB_API_MODE}" in
+    auto)
+      printf '%s' "${expected_mode}"
+      ;;
+    "${expected_mode}")
+      printf '%s' "${MONGODB_API_MODE}"
+      ;;
+    serviceVersion|clusterVersionRef)
+      error "MONGODB_API_MODE=${MONGODB_API_MODE} conflicts with KUBEBLOCKS_TEMPLATE_VERSION=${template_version}; expected ${expected_mode}."
+      ;;
+    *)
+      error "Unsupported MONGODB_API_MODE=${MONGODB_API_MODE}. Expected auto, serviceVersion, or clusterVersionRef."
+      ;;
+  esac
 }
 
 detect_kubeblocks_template_version() {
-  local version major
+  local version configured_version configured_template deployed_template=""
 
+  configured_version="$(read_configured_kubeblocks_version)"
   version="$(kubectl get deployment kubeblocks -n kb-system -o jsonpath='{.metadata.labels.app\.kubernetes\.io/version}{" "}{.spec.template.spec.containers[*].image}' 2>/dev/null || true)"
   if [ -z "${version}" ]; then
     version="$(
@@ -292,30 +341,31 @@ detect_kubeblocks_template_version() {
     )"
   fi
 
-  if [[ "${version}" =~ (^|[^0-9])(0\.)?9\.([0-9]+) ]]; then
-    printf '%s' "kb9"
-    return
-  fi
-
-  if [[ "${version}" =~ (^|[^0-9])(0\.)?8\.([0-9]+) ]]; then
-    printf '%s' "kb8"
-    return
-  fi
-
-  if [[ "${version}" =~ (^|[^0-9])([1-9][0-9]*)\. ]]; then
-    major="${BASH_REMATCH[2]}"
-    if [ "${major}" -lt 8 ]; then
-      warn "Detected KubeBlocks version ${version}, using kb8 manifest templates" >&2
-      printf '%s' "kb8"
-      return
+  if [[ "${version}" =~ (^|[^0-9])(0\.[89]\.[0-9]+|[89]\.[0-9]+) ]]; then
+    if ! deployed_template="$(kubeblocks_template_from_version "${BASH_REMATCH[2]}")"; then
+      error "Unable to map detected KubeBlocks version ${BASH_REMATCH[2]}"
     fi
+  fi
 
-    printf '%s' "kb9"
+  if [ -n "${configured_version}" ]; then
+    if ! configured_template="$(kubeblocks_template_from_version "${configured_version}")"; then
+      error "Unsupported global KubeBlocks version ${configured_version}. Expected 0.8.x or 0.9.x."
+    fi
+    if [ -n "${deployed_template}" ] && [ "${configured_template}" != "${deployed_template}" ]; then
+      error "KubeBlocks version mismatch: global values specify ${configured_version} (${configured_template}), but deployment metadata indicates ${deployed_template}: ${version}"
+    fi
+    info "Resolved KubeBlocks ${configured_version} from global values as ${configured_template}" >&2
+    printf '%s' "${configured_template}"
     return
   fi
 
-  warn "Unable to detect KubeBlocks version, using kb8 manifest templates" >&2
-  printf '%s' "kb8"
+  if [ -n "${deployed_template}" ]; then
+    info "Resolved KubeBlocks from deployment metadata as ${deployed_template}: ${version}" >&2
+    printf '%s' "${deployed_template}"
+    return
+  fi
+
+  error "Unable to determine KubeBlocks 0.8/0.9 version from global values or deployment metadata. Set KUBEBLOCKS_TEMPLATE_VERSION explicitly after verifying the installed addon."
 }
 
 resolve_kubeblocks_template_version() {
@@ -329,6 +379,41 @@ resolve_kubeblocks_template_version() {
     *)
       echo -e "\033[31m ERROR [$(timestamp)] >> Unsupported KUBEBLOCKS_TEMPLATE_VERSION=${KUBEBLOCKS_TEMPLATE_VERSION}. Expected auto, kb8, or kb9. \033[0m" >&2
       exit 1
+      ;;
+  esac
+}
+
+validate_kubeblocks_prerequisites() {
+  local component_versions normalized_component_versions
+
+  kubectl get crd clusters.apps.kubeblocks.io >/dev/null 2>&1 ||
+    error "KubeBlocks Cluster CRD clusters.apps.kubeblocks.io is not installed."
+
+  case "${RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION}" in
+    kb8)
+      kubectl get clusterdefinitions.apps.kubeblocks.io "${MONGODB_CLUSTER_DEFINITION_REF}" >/dev/null 2>&1 ||
+        error "KubeBlocks ClusterDefinition ${MONGODB_CLUSTER_DEFINITION_REF} is not installed."
+      kubectl get clusterversions.apps.kubeblocks.io "${MONGODB_CLUSTER_VERSION_REF}" >/dev/null 2>&1 ||
+        error "KubeBlocks ClusterVersion ${MONGODB_CLUSTER_VERSION_REF} is not installed."
+      ;;
+    kb9)
+      kubectl get componentdefinitions.apps.kubeblocks.io "${MONGODB_COMPONENT_NAME}" >/dev/null 2>&1 ||
+        error "KubeBlocks ComponentDefinition ${MONGODB_COMPONENT_NAME} is not installed."
+      kubectl get componentversions.apps.kubeblocks.io "${MONGODB_COMPONENT_NAME}" >/dev/null 2>&1 ||
+        error "KubeBlocks ComponentVersion ${MONGODB_COMPONENT_NAME} is not installed."
+      component_versions="$(
+        kubectl get componentversions.apps.kubeblocks.io "${MONGODB_COMPONENT_NAME}" \
+          -o jsonpath='{.status.serviceVersions}{"\n"}{range .spec.compatibilityRules[*].releases[*]}{.}{"\n"}{end}{range .spec.releases[*]}{.serviceVersion}{"\n"}{end}' \
+          2>/dev/null || true
+      )"
+      normalized_component_versions="$(
+        printf '%s\n' "${component_versions}" |
+          tr ',[]"' '\n' |
+          tr '[:space:]' '\n'
+      )"
+      if ! grep -Fxq "${MONGODB_SERVICE_VERSION}" <<< "${normalized_component_versions}"; then
+        error "MongoDB ComponentVersion ${MONGODB_COMPONENT_NAME} does not provide serviceVersion=${MONGODB_SERVICE_VERSION}. Available versions: ${component_versions:-none}"
+      fi
       ;;
   esac
 }
@@ -472,7 +557,10 @@ delete_namespaced_resource() {
 
   if kubectl -n "${namespace}" get "${kind}" "${name}" >/dev/null 2>&1; then
     info "Deleting ${kind}/${name} in namespace ${namespace}"
-    kubectl -n "${namespace}" delete "${kind}" "${name}" --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null
+    if ! kubectl -n "${namespace}" delete "${kind}" "${name}" --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null; then
+      warn "Failed to delete ${kind}/${name} in namespace ${namespace}"
+      return 1
+    fi
   fi
 }
 
@@ -482,96 +570,164 @@ delete_cluster_resource() {
 
   if kubectl get "${kind}" "${name}" >/dev/null 2>&1; then
     info "Deleting cluster resource ${kind}/${name}"
-    kubectl delete "${kind}" "${name}" --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null
+    if ! kubectl delete "${kind}" "${name}" --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null; then
+      warn "Failed to delete cluster resource ${kind}/${name}"
+      return 1
+    fi
   fi
 }
 
 cleanup_known_application_resources() {
-  delete_namespaced_resource "${NAMESPACE}" serviceaccount sealaf-sa
-  delete_namespaced_resource "${NAMESPACE}" secret sealaf-config
-  delete_namespaced_resource "${NAMESPACE}" service sealaf-web
-  delete_namespaced_resource "${NAMESPACE}" service sealaf-server
-  delete_namespaced_resource "${NAMESPACE}" deployment sealaf-web
-  delete_namespaced_resource "${NAMESPACE}" deployment sealaf-server
-  delete_namespaced_resource "${NAMESPACE}" ingress sealaf-web
-  delete_namespaced_resource "${NAMESPACE}" ingress sealaf-server
-  delete_namespaced_resource app-system app sealaf
-  delete_cluster_resource clusterrole sealaf-role
-  delete_cluster_resource clusterrolebinding sealaf-rolebinding
+  local failed=0
+
+  delete_namespaced_resource "${NAMESPACE}" serviceaccount sealaf-sa || failed=1
+  delete_namespaced_resource "${NAMESPACE}" secret sealaf-config || failed=1
+  delete_namespaced_resource "${NAMESPACE}" service sealaf-web || failed=1
+  delete_namespaced_resource "${NAMESPACE}" service sealaf-server || failed=1
+  delete_namespaced_resource "${NAMESPACE}" deployment sealaf-web || failed=1
+  delete_namespaced_resource "${NAMESPACE}" deployment sealaf-server || failed=1
+  delete_namespaced_resource "${NAMESPACE}" ingress sealaf-web || failed=1
+  delete_namespaced_resource "${NAMESPACE}" ingress sealaf-server || failed=1
+  delete_namespaced_resource app-system app sealaf || failed=1
+  delete_cluster_resource clusterrole sealaf-role || failed=1
+  delete_cluster_resource clusterrolebinding sealaf-rolebinding || failed=1
+
+  return "${failed}"
 }
 
 delete_mongodb_pvcs() {
-  local pvc pvc_prefix
+  local pvc pvc_prefix failed=0
 
   pvc_prefix="data-${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}-"
   for pvc in $(kubectl -n "${NAMESPACE}" get pvc -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep "^${pvc_prefix}" || true); do
-    delete_namespaced_resource "${NAMESPACE}" pvc "${pvc}"
+    delete_namespaced_resource "${NAMESPACE}" pvc "${pvc}" || failed=1
   done
 
   kubectl -n "${NAMESPACE}" delete pvc \
     -l "app.kubernetes.io/instance=${MONGODB_CLUSTER_NAME}" \
-    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || true
+    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || failed=1
   kubectl -n "${NAMESPACE}" delete pvc \
     -l "apps.kubeblocks.io/cluster-name=${MONGODB_CLUSTER_NAME}" \
-    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || true
+    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || failed=1
+
+  return "${failed}"
 }
 
 delete_prefixed_namespaced_resources() {
   local namespace=$1
   local kind=$2
   local prefix=$3
-  local name
+  local name failed=0
 
   for name in $(kubectl -n "${namespace}" get "${kind}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep "^${prefix}" || true); do
-    delete_namespaced_resource "${namespace}" "${kind}" "${name}"
+    delete_namespaced_resource "${namespace}" "${kind}" "${name}" || failed=1
   done
+
+  return "${failed}"
 }
 
 cleanup_internal_mongodb() {
-  local secret_name
+  local secret_name failed=0
 
   if [ "${SEALAF_UNINSTALL_DELETE_DATABASE}" != "true" ]; then
     warn "Skipping MongoDB deletion because SEALAF_UNINSTALL_DELETE_DATABASE=${SEALAF_UNINSTALL_DELETE_DATABASE}"
     return
   fi
 
-  delete_namespaced_resource "${NAMESPACE}" cluster.apps.kubeblocks.io "${MONGODB_CLUSTER_NAME}"
-  delete_namespaced_resource "${NAMESPACE}" statefulset "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}"
-  delete_namespaced_resource "${NAMESPACE}" service "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}"
-  delete_namespaced_resource "${NAMESPACE}" service "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}-headless"
-  delete_namespaced_resource "${NAMESPACE}" secret "${MONGODB_CONN_CREDENTIAL_SECRET}"
+  delete_namespaced_resource "${NAMESPACE}" cluster.apps.kubeblocks.io "${MONGODB_CLUSTER_NAME}" || failed=1
+  delete_namespaced_resource "${NAMESPACE}" statefulset "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}" || failed=1
+  delete_namespaced_resource "${NAMESPACE}" service "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}" || failed=1
+  delete_namespaced_resource "${NAMESPACE}" service "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}-headless" || failed=1
+  delete_namespaced_resource "${NAMESPACE}" secret "${MONGODB_CONN_CREDENTIAL_SECRET}" || failed=1
   while IFS= read -r secret_name; do
-    delete_namespaced_resource "${NAMESPACE}" secret "${secret_name}"
+    delete_namespaced_resource "${NAMESPACE}" secret "${secret_name}" || failed=1
   done < <(mongodb_account_root_secret_candidates)
-  delete_namespaced_resource "${NAMESPACE}" serviceaccount "${MONGODB_SERVICE_ACCOUNT_NAME}"
-  delete_mongodb_pvcs
-  delete_prefixed_namespaced_resources "${NAMESPACE}" configmap "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}"
-  delete_prefixed_namespaced_resources "${NAMESPACE}" secret "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}"
+  delete_namespaced_resource "${NAMESPACE}" serviceaccount "${MONGODB_SERVICE_ACCOUNT_NAME}" || failed=1
+  delete_mongodb_pvcs || failed=1
+  delete_prefixed_namespaced_resources "${NAMESPACE}" configmap "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}" || failed=1
+  delete_prefixed_namespaced_resources "${NAMESPACE}" secret "${MONGODB_CLUSTER_NAME}-${MONGODB_COMPONENT_NAME}" || failed=1
 
   kubectl -n "${NAMESPACE}" delete configmap \
     -l "app.kubernetes.io/instance=${MONGODB_CLUSTER_NAME}" \
-    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || true
+    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || failed=1
   kubectl -n "${NAMESPACE}" delete configmap \
     -l "apps.kubeblocks.io/cluster-name=${MONGODB_CLUSTER_NAME}" \
-    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || true
+    --ignore-not-found --wait=true --timeout="${UNINSTALL_TIMEOUT}" >/dev/null 2>&1 || failed=1
+
+  return "${failed}"
+}
+
+remove_helm_release_metadata() {
+  kubectl -n "${NAMESPACE}" delete secret,configmap \
+    -l "owner=helm,name=${RELEASE_NAME}" \
+    --ignore-not-found >/dev/null 2>&1 || true
+}
+
+release_mongodb_from_helm() {
+  if kubectl -n "${NAMESPACE}" get cluster.apps.kubeblocks.io "${MONGODB_CLUSTER_NAME}" >/dev/null 2>&1; then
+    kubectl -n "${NAMESPACE}" annotate cluster.apps.kubeblocks.io "${MONGODB_CLUSTER_NAME}" \
+      meta.helm.sh/release-name- meta.helm.sh/release-namespace- >/dev/null 2>&1 || true
+    kubectl -n "${NAMESPACE}" label cluster.apps.kubeblocks.io "${MONGODB_CLUSTER_NAME}" \
+      app.kubernetes.io/managed-by- >/dev/null 2>&1 || true
+  fi
 }
 
 uninstall_sealaf() {
+  local uninstall_failed=false helm_cleanup_required=false
+
+  if [ "${SEALAF_DELETE_NAMESPACE}" = "true" ] && [ "${SEALAF_UNINSTALL_DELETE_DATABASE}" != "true" ]; then
+    error "SEALAF_DELETE_NAMESPACE=true conflicts with SEALAF_UNINSTALL_DELETE_DATABASE=false; refusing to delete a namespace that contains the preserved database."
+  fi
+
   info "Starting full Sealaf uninstall for release ${RELEASE_NAME} in namespace ${NAMESPACE}"
   backup_sealaf_resources
 
-  if is_existing_release; then
+  if [ "${SEALAF_UNINSTALL_DELETE_DATABASE}" = "true" ]; then
+    if ! cleanup_internal_mongodb; then
+      warn "MongoDB cleanup did not complete; continuing application cleanup"
+      uninstall_failed=true
+    fi
+  else
+    info "Preserving MongoDB Cluster ${MONGODB_CLUSTER_NAME} and its data"
+  fi
+
+  if is_existing_release && [ "${SEALAF_UNINSTALL_DELETE_DATABASE}" = "true" ]; then
     info "Uninstalling Helm release ${RELEASE_NAME}"
-    helm uninstall "${RELEASE_NAME}" -n "${NAMESPACE}" --wait --timeout "${UNINSTALL_TIMEOUT}"
+    if ! helm uninstall "${RELEASE_NAME}" -n "${NAMESPACE}" --no-hooks --timeout "${UNINSTALL_TIMEOUT}"; then
+      warn "Helm uninstall failed; continuing known-resource cleanup"
+      helm_cleanup_required=true
+    fi
+  elif is_existing_release; then
+    warn "Removing Helm-managed application resources manually so MongoDB can be preserved"
   else
     warn "Helm release ${RELEASE_NAME} not found in namespace ${NAMESPACE}, cleaning known resources"
   fi
 
-  cleanup_known_application_resources
-  cleanup_internal_mongodb
+  if ! cleanup_known_application_resources; then
+    warn "Some known Sealaf application resources could not be deleted"
+    uninstall_failed=true
+  fi
+
+  if [ "${SEALAF_UNINSTALL_DELETE_DATABASE}" != "true" ]; then
+    release_mongodb_from_helm
+    remove_helm_release_metadata
+  elif [ "${helm_cleanup_required}" = "true" ]; then
+    remove_helm_release_metadata
+    if is_existing_release; then
+      warn "Helm release metadata for ${RELEASE_NAME} still exists"
+      uninstall_failed=true
+    fi
+  fi
 
   if [ "${SEALAF_DELETE_NAMESPACE}" = "true" ]; then
-    delete_cluster_resource namespace "${NAMESPACE}"
+    if ! delete_cluster_resource namespace "${NAMESPACE}"; then
+      warn "Namespace ${NAMESPACE} could not be deleted"
+      uninstall_failed=true
+    fi
+  fi
+
+  if [ "${uninstall_failed}" = "true" ]; then
+    error "Sealaf uninstall finished with residual resources. Inspect namespace ${NAMESPACE} and KubeBlocks finalizers."
   fi
 
   info "Sealaf uninstall completed"
@@ -625,8 +781,8 @@ MONGODB_SECRET_WAIT_TIMEOUT="${MONGODB_SECRET_WAIT_TIMEOUT:-${mongodbSecretWaitT
 MONGODB_SECRET_TYPE="${MONGODB_SECRET_TYPE:-}"
 mongodb_uri_source="${mongodb_uri_source:-}"
 RESOLVED_MONGODB_URI="${RESOLVED_MONGODB_URI:-}"
-RESOLVED_MONGODB_API_MODE="$(detect_mongodb_api_mode)"
-RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION="$(resolve_kubeblocks_template_version)"
+RESOLVED_MONGODB_API_MODE=""
+RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION=""
 
 if [ -z "${MONGODB_MANAGE_CLUSTER}" ]; then
   if [ -n "${MONGODB_URI}" ]; then
@@ -638,6 +794,9 @@ fi
 
 case "${SEALAF_ACTION}" in
   install|upgrade)
+    RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION="$(resolve_kubeblocks_template_version)"
+    RESOLVED_MONGODB_API_MODE="$(resolve_mongodb_api_mode "${RESOLVED_KUBEBLOCKS_TEMPLATE_VERSION}")"
+    validate_kubeblocks_prerequisites
     ;;
   uninstall)
     uninstall_sealaf

@@ -13,8 +13,10 @@ sealos run <sealaf-image>
 `sealos run` 支持用 `-e, --env` 传递环境变量，格式如下：
 
 ```bash
-sealos run <sealaf-image> -e KEY=value -e OTHER_KEY=other-value
+sealos run -e KEY=value -e OTHER_KEY=other-value <sealaf-image>
 ```
+
+所有 `sealos run` 选项必须写在镜像参数前面。部分 Sealos 版本遇到第一个镜像参数后会停止解析选项；把 `-e` 写在镜像后面可能导致环境变量不生效。
 
 脚本最终执行 Helm：
 
@@ -63,26 +65,39 @@ sealos run <sealaf-image>
 - 如 MongoDB Cluster 不存在，先创建 MongoDB，再等待凭据 Secret。
 - 安装或升级 Helm release `sealaf`。
 
+KubeBlocks 自动判断顺序：
+
+1. 如果显式传入 `KUBEBLOCKS_TEMPLATE_VERSION=kb8|kb9`，使用显式值。
+2. 否则优先读取 `/root/.sealos/cloud/values/global.yaml` 的 `.global.featureConfigs.database.kubeblocksVersion`。
+3. 新路径为空时兼容读取 `.global.database.kubeblocksVersion`。
+4. global values 没有配置时，才从 `kb-system/kubeblocks` Deployment 的版本标签和镜像 tag 探测。
+5. global values 与 Deployment 探测结果冲突时终止安装，不生成混合版本资源。
+
+模板与 API 模式固定绑定：KB 0.8 使用 `kb8 + clusterVersionRef + mongodb-5.0`；KB 0.9 使用 `kb9 + serviceVersion + 8.0.4`。脚本还会在创建数据库前检查对应 CRD、ClusterVersion、ComponentDefinition 和 ComponentVersion，并确认 KB9 addon 确实提供 MongoDB 8.0.4。
+
 手动指定域名：
 
 ```bash
-sealos run <sealaf-image> \
+sealos run \
   -e CLOUD_DOMAIN=example.com \
-  -e CLOUD_PORT=443
+  -e CLOUD_PORT=443 \
+  <sealaf-image>
 ```
 
 手动指定外部 MongoDB：
 
 ```bash
-sealos run <sealaf-image> \
-  -e MONGODB_URI='mongodb://user:pass@host:27017/sys_db?authSource=admin&replicaSet=sealaf-mongodb-mongodb&w=majority'
+sealos run \
+  -e MONGODB_URI='mongodb://user:pass@host:27017/sys_db?authSource=admin&replicaSet=sealaf-mongodb-mongodb&w=majority' \
+  <sealaf-image>
 ```
 
 传递额外 Helm 参数：
 
 ```bash
-sealos run <sealaf-image> \
-  -e HELM_OPTS='--timeout 10m --debug'
+sealos run \
+  -e HELM_OPTS='--timeout 10m --debug' \
+  <sealaf-image>
 ```
 
 ## 已有旧版资源的接管和升级
@@ -120,18 +135,20 @@ meta.helm.sh/release-namespace=sealaf-system
 迁移旧版资源时执行：
 
 ```bash
-sealos run <sealaf-image> \
+sealos run \
   -e SEALAF_ADOPT_EXISTING_RESOURCES=true \
   -e SEALAF_BACKUP_ENABLED=true \
-  -e HELM_OPTS='--timeout 10m'
+  -e HELM_OPTS='--timeout 10m' \
+  <sealaf-image>
 ```
 
 如果只想做无副作用参数和模板验证，不接管旧资源：
 
 ```bash
-sealos run <sealaf-image> \
+sealos run \
   -e SEALAF_ADOPT_EXISTING_RESOURCES=false \
-  -e HELM_OPTS='--dry-run --debug'
+  -e HELM_OPTS='--dry-run --debug' \
+  <sealaf-image>
 ```
 
 注意：如果旧资源存在且未被 Helm 管理，关闭接管后 dry-run 可能仍会因为 ownership 校验失败。这种失败说明 Helm 接管是必要步骤。
@@ -153,15 +170,16 @@ clusterrole/sealaf-role
 clusterrolebinding/sealaf-rolebinding
 ```
 
-默认内置 MongoDB 会被接管进 Helm release。升级时脚本仍会复用旧 MongoDB 凭据和 PVC，不会重建数据库；但卸载时 Helm release 能删除 `sealaf-mongodb` Cluster。
+默认内置 MongoDB 会被接管进 Helm release。升级时脚本仍会复用旧 MongoDB 凭据和 PVC，不会重建数据库。MongoDB Cluster 带有 Helm keep 策略，完整卸载时由安装脚本根据 `SEALAF_UNINSTALL_DELETE_DATABASE` 显式决定是否删除。
 
 显式传入 `MONGODB_URI` 时视为外部数据库，脚本不会创建或接管内置 `sealaf-mongodb` Cluster。
 
 如果资源已经属于另一个 Helm release，脚本默认拒绝抢占。确认要覆盖旧 owner 时才使用：
 
 ```bash
-sealos run <sealaf-image> \
-  -e SEALAF_FORCE_ADOPT=true
+sealos run \
+  -e SEALAF_FORCE_ADOPT=true \
+  <sealaf-image>
 ```
 
 ## 后续 Helm 管理
@@ -207,25 +225,31 @@ helm rollback sealaf <REVISION> -n sealaf-system --wait
 完整卸载：
 
 ```bash
-sealos run <sealaf-image> -e SEALAF_ACTION=uninstall
+sealos run -f \
+  -e SEALAF_ACTION=uninstall \
+  -e SEALAF_UNINSTALL_DELETE_DATABASE=true \
+  <sealaf-image>
 ```
 
 卸载语义是完整删除内置部署：
 
 - 先备份现有资源到 `/tmp/sealos-backup/sealaf/adopt-<timestamp>.yaml`。
-- 删除 Helm release `sealaf`。
+- 默认先删除内置 `sealaf-mongodb` Cluster、MongoDB 凭据 Secret、ServiceAccount 和 PVC。
+- 以非等待模式删除 Helm release `sealaf`，失败时继续清理已知资源和残留 release 元数据。
 - 清理已知应用残留资源。
-- 默认删除内置 `sealaf-mongodb` Cluster、MongoDB 凭据 Secret、ServiceAccount 和 PVC。
 
 如只想卸载应用但保留内置数据库，可显式关闭数据库删除：
 
 ```bash
-sealos run <sealaf-image> \
+sealos run -f \
   -e SEALAF_ACTION=uninstall \
-  -e SEALAF_UNINSTALL_DELETE_DATABASE=false
+  -e SEALAF_UNINSTALL_DELETE_DATABASE=false \
+  <sealaf-image>
 ```
 
-直接执行 `helm uninstall sealaf -n sealaf-system` 只会删除 Helm release 中记录的资源。对于已由新版脚本升级接管过的环境，`sealaf-mongodb` Cluster 会随 Helm 删除；PVC 和凭据残留仍建议用 `SEALAF_ACTION=uninstall` 清理。
+保留数据库时不能同时设置 `SEALAF_DELETE_NAMESPACE=true`。脚本会删除应用资源和 Helm release 元数据，并解除 MongoDB Cluster 的 Helm ownership。
+
+不要用 `helm uninstall` 代替完整卸载。新版本的 MongoDB Cluster 带有 Helm keep 策略，直接执行 Helm 只删除 release 中的应用资源，并会保留数据库；完整删除数据库、凭据和 PVC 必须使用 `SEALAF_ACTION=uninstall`。
 
 ## MongoDB 凭据获取逻辑
 
@@ -316,8 +340,8 @@ ingress:
 | `MONGODB_COMPONENT_NAME` | `mongodb` | MongoDB component 名。兼容旧变量 `mongodbComponentName`。 |
 | `MONGODB_DATABASE` | `sys_db` | 应用数据库名。兼容旧变量 `mongodbDatabase`。 |
 | `MONGODB_PORT` | `27017` | MongoDB 端口。兼容旧变量 `mongodbPort`。 |
-| `MONGODB_API_MODE` | `auto` | KubeBlocks Cluster API 模式：`auto`、`serviceVersion`、`clusterVersionRef`。兼容旧变量 `mongodbApiMode`。 |
-| `KUBEBLOCKS_TEMPLATE_VERSION` | `auto` | KubeBlocks manifest 模板版本：`auto`、`kb8`、`kb9`。兼容旧变量 `kubeblocksTemplateVersion`。脚本会解析成 `kubeblocks.templateVersion` 传给 Helm 和 server。 |
+| `MONGODB_API_MODE` | `auto` | KubeBlocks Cluster API 模式。`auto` 会与模板绑定：`kb8=clusterVersionRef`、`kb9=serviceVersion`；显式值与模板冲突时安装失败。兼容旧变量 `mongodbApiMode`。 |
+| `KUBEBLOCKS_TEMPLATE_VERSION` | `auto` | KubeBlocks manifest 模板版本：`auto`、`kb8`、`kb9`。自动模式依次读取新版和旧版 global values 路径，再回退到 Deployment 元数据探测。兼容旧变量 `kubeblocksTemplateVersion`。 |
 | `MONGODB_SERVICE_VERSION` | `8.0.4` | `serviceVersion` 模式使用的 MongoDB service version。兼容旧变量 `mongodbServiceVersion`。 |
 | `MONGODB_CLUSTER_DEFINITION_REF` | `mongodb` | `clusterVersionRef` 模式使用的 ClusterDefinition。兼容旧变量 `mongodbClusterDefinitionRef`。 |
 | `MONGODB_CLUSTER_VERSION_REF` | `mongodb-5.0` | `clusterVersionRef` 模式使用的 ClusterVersion。兼容旧变量 `mongodbClusterVersionRef`。 |
@@ -351,38 +375,37 @@ sealos run <sealaf-image>
 旧版迁移并接管资源：
 
 ```bash
-sealos run <sealaf-image> \
+sealos run \
   -e SEALAF_ADOPT_EXISTING_RESOURCES=true \
   -e SEALAF_BACKUP_ENABLED=true \
-  -e HELM_OPTS='--timeout 10m'
+  -e HELM_OPTS='--timeout 10m' \
+  <sealaf-image>
 ```
 
 指定外部 MongoDB：
 
 ```bash
-sealos run <sealaf-image> \
-  -e MONGODB_URI='mongodb://user:pass@host:27017/sys_db?authSource=admin&replicaSet=sealaf-mongodb-mongodb&w=majority'
+sealos run \
+  -e MONGODB_URI='mongodb://user:pass@host:27017/sys_db?authSource=admin&replicaSet=sealaf-mongodb-mongodb&w=majority' \
+  <sealaf-image>
 ```
 
-强制使用旧 KubeBlocks API 模式：
+强制使用 KB8 及旧 KubeBlocks API 模式：
 
 ```bash
-sealos run <sealaf-image> \
-  -e MONGODB_API_MODE=clusterVersionRef
+sealos run \
+  -e KUBEBLOCKS_TEMPLATE_VERSION=kb8 \
+  -e MONGODB_API_MODE=clusterVersionRef \
+  <sealaf-image>
 ```
 
-强制使用新 KubeBlocks API 模式：
+强制使用 KB9 及新 KubeBlocks API 模式：
 
 ```bash
-sealos run <sealaf-image> \
-  -e MONGODB_API_MODE=serviceVersion
-```
-
-强制使用 KB9 manifest 模板：
-
-```bash
-sealos run <sealaf-image> \
-  -e KUBEBLOCKS_TEMPLATE_VERSION=kb9
+sealos run \
+  -e KUBEBLOCKS_TEMPLATE_VERSION=kb9 \
+  -e MONGODB_API_MODE=serviceVersion \
+  <sealaf-image>
 ```
 
 查看 Helm 状态：
@@ -394,5 +417,9 @@ helm status sealaf -n sealaf-system
 完整卸载：
 
 ```bash
-sealos run <sealaf-image> -e SEALAF_ACTION=uninstall
+sealos run -f \
+  -e SEALAF_ACTION=uninstall \
+  -e SEALAF_UNINSTALL_DELETE_DATABASE=true \
+  -e SEALAF_DELETE_NAMESPACE=true \
+  <sealaf-image>
 ```

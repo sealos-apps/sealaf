@@ -5,6 +5,8 @@ kind: Cluster
 metadata:
   name: {{ .Values.mongodb.clusterName }}
   namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/name: {{ .Values.mongodb.clusterName }}
     {{- include "sealaf.labels" . | nindent 4 }}
