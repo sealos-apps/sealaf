@@ -374,7 +374,7 @@ export class ApplicationController {
         origin.resource.dedicatedDatabase?.replicas
     ) {
       return ResponseUtil.error(
-        'To reduce the number of database replicas, please contact customer support.',
+        'Database instance count can be increased, but cannot be reduced.',
       )
     }
 

@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Slider,
@@ -16,8 +15,6 @@ import { COLOR_MODE } from "@/constants";
 
 import { TypeBundle } from "..";
 
-import useGlobalStore from "@/pages/globalStore";
-
 export default function DatabaseBundleControl(props: {
   bundle: TypeBundle;
   originReplicas?: number;
@@ -31,22 +28,20 @@ export default function DatabaseBundleControl(props: {
   const { t } = useTranslation();
   const darkMode = useColorMode().colorMode === COLOR_MODE.dark;
 
-  const { showInfo } = useGlobalStore(({ showInfo }) => ({ showInfo }));
-
-  useEffect(() => {
-    showInfo(t("application.DatabaseCreateTip"), 5000);
-  }, []);
-
   const buildSlider = (props: {
     type: string;
     specs: { value: number }[];
     value?: number;
     min?: number;
-    disable?: boolean;
     onChange: (value: number) => void;
   }) => {
-    const { type, specs, value, onChange, min, disable } = props;
+    const { type, specs, value, onChange, min } = props;
     const idx = specs.findIndex((spec) => spec.value === value);
+    const handleChange = (index: number) => {
+      const spec = specs[index];
+      if (!spec || (min !== undefined && spec.value < min)) return;
+      onChange(spec.value);
+    };
 
     return (
       <div className="ml-8 mt-8 flex" key={type}>
@@ -60,11 +55,7 @@ export default function DatabaseBundleControl(props: {
           min={0}
           max={specs.length - 1}
           colorScheme="primary"
-          onChange={(v) => {
-            if (disable) return;
-            if (typeof min !== "undefined" && min > specs[v].value) return;
-            onChange(specs[v].value);
-          }}
+          onChange={handleChange}
         >
           {specs.map((spec: any, i: number) => (
             <SliderMark
@@ -85,7 +76,7 @@ export default function DatabaseBundleControl(props: {
           ) : (
             <SliderThumb
               onClick={() => {
-                onChange(specs[0].value);
+                handleChange(0);
               }}
               style={{ opacity: 0 }}
             />
@@ -109,6 +100,9 @@ export default function DatabaseBundleControl(props: {
         </div>
       </div>
       <div className="pb-8">
+        <p className={clsx("text-sm mx-8 mt-4", darkMode ? "" : "text-grayModern-600")}>
+          {t("application.DatabaseCreateTip")}
+        </p>
         {buildSlider({
           type: "cpu",
           value: _.get(bundle, "dedicatedDatabase.cpu") as unknown as number,
@@ -137,7 +131,6 @@ export default function DatabaseBundleControl(props: {
         {buildSlider({
           type: "replicas",
           min: originReplicas,
-          // disable: type === "change",
           value: _.get(bundle, "dedicatedDatabase.replicas") as unknown as number,
           specs: find(resourceOptions, { type: "dedicatedDatabaseReplicas" })?.specs || [],
           onChange: (value) => {
