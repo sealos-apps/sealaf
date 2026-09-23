@@ -12,6 +12,7 @@ export enum SettingKey {
   SiteFooter = 'site_footer',
 
   AiPilotUrl = 'ai_pilot_url',
+  LafExternalLinksEnabled = 'laf_external_links_enabled',
   LafForumUrl = 'laf_forum_url',
   LafBusinessUrl = 'laf_business_url',
   LafDiscordUrl = 'laf_discord_url',

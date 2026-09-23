@@ -357,6 +357,12 @@ export class InitializerService {
     await this.db.collection<Setting>('Setting').insertMany([
       {
         public: true,
+        key: SettingKey.LafExternalLinksEnabled,
+        value: 'false',
+        desc: 'show external documentation, community and business links',
+      },
+      {
+        public: true,
         key: SettingKey.AiPilotUrl,
         value: '',
         desc: 'ai pilot url',

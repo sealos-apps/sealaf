@@ -13,13 +13,14 @@ import { getAvatarUrl } from "@/utils/getAvatarUrl";
 import UserSetting from "../../pages/app/setting/UserSetting";
 
 import useGlobalStore from "@/pages/globalStore";
-import useSiteSettingStore from "@/pages/siteSetting";
+import useSiteSettingStore, { selectExternalLinksEnabled } from "@/pages/siteSetting";
 
 const Header = (props: { className?: string }) => {
   const { className } = props;
   const { t } = useTranslation();
   const { userInfo, avatarUpdatedAt } = useGlobalStore((state) => state);
   const { siteSettings } = useSiteSettingStore();
+  const externalLinksEnabled = useSiteSettingStore(selectExternalLinksEnabled);
   const navigate = useNavigate();
   const { colorMode } = useColorMode();
   const darkMode = colorMode === COLOR_MODE.dark;
@@ -80,7 +81,7 @@ const Header = (props: { className?: string }) => {
 
       <HStack spacing={4}>
         {navList_right.map((item) => {
-          if (!item.ref) return null;
+          if (!externalLinksEnabled || !item.ref) return null;
           return (
             <span
               key={item.text}

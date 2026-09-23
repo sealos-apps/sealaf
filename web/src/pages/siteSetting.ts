@@ -10,6 +10,7 @@ type SITE_KEY =
   | "site_url"
   | "ai_pilot_url"
   | "ai_complete_url"
+  | "laf_external_links_enabled"
   | "laf_forum_url"
   | "laf_business_url"
   | "laf_discord_url"
@@ -24,6 +25,9 @@ type State = {
   };
   getSiteSettings: () => void;
 };
+
+export const selectExternalLinksEnabled = (state: State) =>
+  state.siteSettings.laf_external_links_enabled?.value === "true";
 
 const useSiteSettingStore = create<State>()(
   devtools(
