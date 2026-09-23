@@ -358,7 +358,7 @@ export class InitializerService {
       {
         public: true,
         key: SettingKey.AiPilotUrl,
-        value: 'https://htr4n1.laf.run/laf-gpt',
+        value: '',
         desc: 'ai pilot url',
       },
       {

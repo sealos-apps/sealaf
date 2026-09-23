@@ -54,6 +54,9 @@ export default function DebugPanel(props: { containerRef: any }) {
   const updateDebugFunctionMutation = useUpdateDebugFunctionMutation();
   const globalStore = useGlobalStore((state) => state);
   const siteSettings = useSiteSettingStore((state) => state.siteSettings);
+  const aiPilotUrl = siteSettings.ai_pilot_url?.value?.trim();
+  // Older installations contain this default even when AI was never configured.
+  const showAiPilot = !!aiPilotUrl && aiPilotUrl !== "https://htr4n1.laf.run/laf-gpt";
 
   const functionCache = useFunctionCache();
 
@@ -206,7 +209,7 @@ export default function DebugPanel(props: { containerRef: any }) {
             >
               {t("FunctionPanel.InterfaceDebug")}
             </Tab>
-            {!!siteSettings.ai_pilot_url?.value && (
+            {showAiPilot && (
               <Tab
                 _selected={{
                   borderColor: "primary.500",
@@ -380,7 +383,7 @@ export default function DebugPanel(props: { containerRef: any }) {
                 </Panel>
               </Row>
             </TabPanel>
-            {!!siteSettings.ai_pilot_url?.value && (
+            {showAiPilot && (
               <TabPanel padding={0} h="full">
                 <AIChatPanel />
               </TabPanel>
