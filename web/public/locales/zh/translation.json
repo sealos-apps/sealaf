@@ -598,7 +598,7 @@
     "DedicatedType": "专用型",
     "SharedType": "共享型",
     "ApplicationSecification": "应用规格",
-    "DatabaseCreateTip": "数据库一旦创建，暂时无法修改类型和实例数，容量只增不减，如有特殊需要请联系管理员"
+    "DatabaseCreateTip": "数据库创建后，类型不可修改；实例数和容量允许增加，不允许减少，保存后无法调回更小的配置。"
   },
   "Storage Threshold": "内存阈值",
   "Yesterday": "昨天",
