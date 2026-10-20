@@ -272,6 +272,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
+          fetch-depth: 0
 
       - name: Install sealos
         run: sudo bash ./.github/scripts/install-sealos.sh
@@ -295,11 +296,27 @@ jobs:
         run: |
           set -euo pipefail
           sudo sealos login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" ghcr.io
-          WEB_IMAGE="ghcr.io/${{ github.repository }}/sealaf-web"
-          SERVER_IMAGE="ghcr.io/${{ github.repository }}/sealaf-server"
+          SOURCE_SHA="${{ needs.prepare.outputs.source_sha }}"
           IMAGE_TAG="${{ needs.prepare.outputs.image_tag }}"
-          sed -i -E "/repository: \"${WEB_IMAGE//\//\\/}\"/ { n; s/tag: \".*\"/tag: \"${IMAGE_TAG}\"/; }" charts/sealaf/values.yaml
-          sed -i -E "/repository: \"${SERVER_IMAGE//\//\\/}\"/ { n; s/tag: \".*\"/tag: \"${IMAGE_TAG}\"/; }" charts/sealaf/values.yaml
+          for component in web server; do
+            COMPONENT_TAG="${IMAGE_TAG}"
+            if [[ "${IMAGE_TAG}" == "latest" ]]; then
+              # Match the component workflow's push paths. First-parent history
+              # selects the merge commit whose SHA tag was published on main.
+              COMPONENT_SHA="$(git -C .. log --first-parent -1 --format=%H "${SOURCE_SHA}" -- \
+                "${component}/" ".github/workflows/dockerize-${component}.yml" \
+                ':(exclude,glob)**/*.md' ":(exclude)${component}/package-lock.json")"
+              if [[ -z "${COMPONENT_SHA}" ]]; then
+                echo "No image build commit found for ${component} at ${SOURCE_SHA}" >&2
+                exit 1
+              fi
+              COMPONENT_TAG="sha-${COMPONENT_SHA:0:7}"
+            fi
+            COMPONENT_IMAGE="ghcr.io/${{ github.repository }}/sealaf-${component}"
+            sed -i -E "/repository: \"${COMPONENT_IMAGE//\//\\/}\"/ { n; s/tag: \".*\"/tag: \"${COMPONENT_TAG}\"/; }" charts/sealaf/values.yaml
+            echo "Package image: ${COMPONENT_IMAGE}:${COMPONENT_TAG}"
+          done
+          # Missing SHA tags fail the package build; never fall back to latest.
           sudo sealos registry save --registry-dir=registry --arch ${{ matrix.arch }} .
 
       - name: Set up Docker Buildx

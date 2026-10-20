@@ -80,6 +80,7 @@ web:
   name: "sealaf-web"
   replicaCount: 1
   image:
+    # CI replaces latest with the component build SHA tag when packaging.
     repository: "ghcr.io/sealos-apps/sealaf/sealaf-web"
     tag: "latest"
     pullPolicy: IfNotPresent
@@ -131,6 +132,7 @@ server:
   name: "sealaf-server"
   replicaCount: 1
   image:
+    # CI replaces latest with the component build SHA tag when packaging.
     repository: "ghcr.io/sealos-apps/sealaf/sealaf-server"
     tag: "latest"
     pullPolicy: IfNotPresent

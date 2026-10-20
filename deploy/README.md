@@ -38,6 +38,35 @@ helm upgrade -i "${RELEASE_NAME}" -n "${NAMESPACE}" --create-namespace "${CHART_
 - `HELM_OPTS`: 通过 `sealos run -e HELM_OPTS=...` 传入的额外 Helm 参数。
 - `--wait`: 等待 Kubernetes 资源 ready 后再退出。
 
+## 离线包升级与镜像缓存
+
+源码 Chart 的 Web/Server 标签默认是 `latest`。CI 打包时分别将
+`web.image.tag` 和 `server.image.tag` 改为各组件实际构建提交的 `sha-<短SHA>`，
+再缓存这些镜像。两个组件分别按目录触发构建，因此包内标签可以不同；
+只改部署脚本时继续使用各组件之前的构建标签。解析限定在打包源提交的
+first-parent 历史，排除组件 Markdown 文档和 package-lock.json，与镜像工作流保持一致。
+
+新标签改变 Deployment 的 Pod 模板并触发滚动更新，`IfNotPresent` 可以继续使用。
+找不到构建提交或对应镜像标签时打包失败，不会退回 `latest`。
+手动指定 `sha-*` 或 `v*` 版本打包时，仍按指定版本选择两个镜像。
+
+手动部署可在 `VALUES_FILE` 指向的 Helm values 文件中覆盖已有参数：
+
+```yaml
+web:
+  image:
+    tag: "sha-<web-build-commit>"
+server:
+  image:
+    tag: "sha-<server-build-commit>"
+```
+
+覆盖值需对应已发布且包含目标架构的镜像；不要覆盖回浮动 `latest`。
+没有新增运行时环境变量。历史安装包需要重新打包才能使用此修复；
+仅重启旧包的 Pod 仍可能复用旧 `latest` 缓存。
+
+回归验证：`python3 deploy/tests/package-image-pinning.py`（需要 Git、Python 3 和 Helm）。
+
 ## 健康检查
 
 Sealaf web 和 server 都暴露稳定的 `GET /healthz`。web 由 nginx 直接返回
